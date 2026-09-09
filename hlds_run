@@ -65,7 +65,7 @@ init() {
 		if ! command -v "$GDB" &> /dev/null; then echo "Warning: 'gdb' not found."; fi
 		# Loud heap-corruption detection for this debug session only.
 		export MALLOC_CHECK_=3
-		# OPTIONAL: fill freed memory with garbage (0xAA) and fresh allocations
+		# OPTIONAL: fill fresh allocations with garbage (0xAA) and freed memory
 		# with ~0xAA so use-after-free and reads of freed/stale data trip almost
 		# immediately. Adds memset on every malloc/free - noticeable overhead.
 		# Uncomment for maximum-radar debugging sessions:
@@ -163,6 +163,7 @@ debugcore() {
 		echo "[*] Top 10 processes by memory (RSS):"; ps -eo pid,rss,pmem,user,args --sort=-rss | head -n 11; echo ""
 		echo "[*] Disk Space Usage:"; df -h; echo ""
 		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|MALLOC_|STEAM|TERM|HOME|PATH)'; echo ""
+		echo "[*] Binary checksum (hlds_linux):"; md5sum "$HL" 2>&1; echo ""
 		echo "[*] Library checksums (all .so in server root):"; find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
 		echo "[*] Game DLLs ($GAME/dlls):"; find "$GAME/dlls" -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
 		echo "[*] Core dump settings:"; echo "ulimit -c: $(ulimit -c)"; echo "kernel.core_pattern: $(cat /proc/sys/kernel/core_pattern 2>&1)"; echo ""
@@ -199,7 +200,7 @@ debugcore() {
 			quit
 			EOF
 
-			"$GDB" "$HL" "$CORE_FILE" -x gdb_commands.txt -batch
+			"$GDB" "$HL" "$CORE_FILE" -x gdb_commands.txt -batch 2>&1 | sed '/No symbol table info available/d'
 
 			rm gdb_commands.txt
 			if [[ -n "$systemd_tmp_core" ]]; then
