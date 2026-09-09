@@ -1,11 +1,10 @@
 #!/bin/bash
 #
 #       HLDS crash-diagnostics wrapper, drop-in for Valve hlds_run.
-#       Runs the server; on a crash (after -debug) writes a full
-#       crash report: system state, console tail, GDB analysis of the
-#       core dump. Auto-restart loop with a crash-loop guard.
-#
-#       Usage, options and details: see README.md in this repo.
+#       Runs the server on a pty (console mirrored to terminal and to
+#       a temp typescript); auto-restart with a crash-loop guard.
+#       With -debug: core dumps + full crash reports (system state,
+#       console tail, GDB analysis).
 #
 export LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH"
 set -o pipefail
