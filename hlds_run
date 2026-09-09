@@ -41,9 +41,12 @@ init() {
 	SRV_ARGS=()
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-		"-game") GAME="$2"; SRV_ARGS+=("-game" "$2"); shift 2 ;;
-		"-binary") HL="$2"; shift 2 ;;
-		"-timeout") TIMEOUT="$2"; shift 2 ;;
+		"-game") [[ $# -ge 2 ]] || { echo "Error: '$1' requires a value."; exit 1; }; GAME="$2"; SRV_ARGS+=("-game" "$2"); shift 2 ;;
+		"-binary") [[ $# -ge 2 ]] || { echo "Error: '$1' requires a value."; exit 1; }; HL="$2"; shift 2 ;;
+		"-timeout")
+			[[ $# -ge 2 ]] || { echo "Error: '-timeout' requires a value."; exit 1; }
+			[[ "$2" =~ ^[0-9]+$ ]] || { echo "Error: '-timeout' value must be a positive integer."; exit 1; }
+			TIMEOUT="$2"; shift 2 ;;
 		"-debug") DEBUG=1; shift ;;
 		"-norestart") RESTART=""; shift ;;
 		*) SRV_ARGS+=("$1"); shift ;;
