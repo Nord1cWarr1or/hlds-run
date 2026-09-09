@@ -115,6 +115,29 @@ debugcore() {
 
     local CORE_FILE
     CORE_FILE=$(find . -maxdepth 1 -name 'core*' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
+    if [[ ! -f "$CORE_FILE" ]]; then
+        CORE_FILE=""
+    fi
+
+    # systemd-coredump: kernel.core_pattern is a pipe handler, so no core
+    # file is written to disk. Try to export the latest matching dump via
+    # coredumpctl (needs journal access; usually root).
+    local systemd_tmp_core=""
+    if [[ -z "$CORE_FILE" ]]; then
+        local core_pattern
+        core_pattern="$(cat /proc/sys/kernel/core_pattern 2>/dev/null)"
+        if [[ "$core_pattern" == "|"* ]] && command -v coredumpctl &>/dev/null; then
+            systemd_tmp_core="$(mktemp -d)/core"
+            log_message "No local core file; core_pattern is a handler - trying 'coredumpctl dump'..."
+            if coredumpctl dump "${HL##*/}" --output="$systemd_tmp_core" >/dev/null 2>&1 && [[ -s "$systemd_tmp_core" ]]; then
+                CORE_FILE="$systemd_tmp_core"
+            else
+                rm -rf "$(dirname "$systemd_tmp_core")"
+                systemd_tmp_core=""
+                log_message "Warning: coredumpctl dump failed (journal access denied or no matching dump)."
+            fi
+        fi
+    fi
 
 	{
 		echo -e "\n======================================================================"
@@ -178,13 +201,21 @@ debugcore() {
 			"$GDB" "$HL" "$CORE_FILE" -x gdb_commands.txt -batch
 
 			rm gdb_commands.txt
-			local new_core_name="crash_core.$(date +%F_%T).dmp"
-			mv "$CORE_FILE" "$new_core_name"
-			# Rotate old core dumps: keep the 3 newest, delete the rest.
-			ls -1t crash_core.*.dmp 2>/dev/null | tail -n +4 | xargs -r rm -f
-			log_message "Old core dumps rotated (kept 3 newest)." >&2
-			echo ""
-			echo "Core dump file has been analyzed and renamed to '$new_core_name'"
+			if [[ -n "$systemd_tmp_core" ]]; then
+				# Exported systemd dump: not ours to keep - remove after analysis.
+				rm -f "$systemd_tmp_core"
+				rmdir "$(dirname "$systemd_tmp_core")" 2>/dev/null
+				echo ""
+				echo "Core dump was exported from systemd-coredump and removed after analysis."
+			else
+				local new_core_name="crash_core.$(date +%F_%T).dmp"
+				mv "$CORE_FILE" "$new_core_name"
+				# Rotate old core dumps: keep the 3 newest, delete the rest.
+				ls -1t crash_core.*.dmp 2>/dev/null | tail -n +4 | xargs -r rm -f
+				log_message "Old core dumps rotated (kept 3 newest)." >&2
+				echo ""
+				echo "Core dump file has been analyzed and renamed to '$new_core_name'"
+			fi
 		fi
 		echo "======================================================================"
 		echo "=== END OF CRASH REPORT ==="
