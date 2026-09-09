@@ -30,6 +30,10 @@ RESTART="yes"
 HL="./hlds_linux"
 TIMEOUT=10
 GDB="gdb"
+# Crash-loop guard: stop after STREAK_LIMIT crashes that happened while the
+# server ran for less than HEALTHY_UPTIME seconds (quick-fail loop).
+STREAK_LIMIT=5
+HEALTHY_UPTIME=300
 # --- End of Global Configuration ---
 
 
@@ -190,16 +194,30 @@ run() {
 	log_message "Server command: $HL ${SRV_ARGS[*]}"
 	if [[ -n "$RESTART" ]]; then
 		log_message "Auto-restart is enabled. Use Ctrl+C inside the 'screen' console to stop."
+		local CRASH_STREAK=0
 		while true; do
 			log_message "Starting server..."
+			local start_ts; start_ts=$(date +%s)
 			launch_server
 			local retval=$?
+			local life=$(( $(date +%s) - start_ts ))
 			if [[ $retval -eq 0 || $retval -eq 130 ]]; then
                 log_message "Server shut down cleanly. Exiting script."
                 break
             fi
+			# A crash after HEALTHY_UPTIME seconds of stable run is not part
+			# of a crash loop - reset the streak.
+			if [[ $life -ge $HEALTHY_UPTIME ]]; then
+				CRASH_STREAK=0
+			fi
+			CRASH_STREAK=$(( CRASH_STREAK + 1 ))
 			debugcore $retval
-			log_message "Server process crashed. Restarting in $TIMEOUT seconds..."
+			if [[ $CRASH_STREAK -ge $STREAK_LIMIT ]]; then
+				log_message "Crash-loop detected: $CRASH_STREAK consecutive crashes without reaching ${HEALTHY_UPTIME}s uptime."
+				log_message "Giving up - fix the cause, then start manually. Last exit code: $retval."
+				return 1
+			fi
+			log_message "Server process crashed (streak $CRASH_STREAK/$STREAK_LIMIT). Restarting in $TIMEOUT seconds..."
 			sleep "$TIMEOUT"
 		done
 		return 0
