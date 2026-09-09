@@ -94,8 +94,9 @@ launch_server() {
 		local exitcode=$?
 	fi
 	if [[ -f "$caplog" ]]; then
-		# Strip `script` session annotations from the tail.
-		CONSOLE_TAIL=$(tail -n 100 "$caplog" | grep -v '^Script \(started\|done\)')
+		# The pty turns \n into \r\n and the engine prints ANSI colors:
+		# strip CRs and escape sequences, then drop `script` annotations.
+		CONSOLE_TAIL=$(tail -n 100 "$caplog" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)')
 		rm -f "$caplog"
 	fi
 	return $exitcode
