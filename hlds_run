@@ -13,15 +13,24 @@
 #         (bt full all threads, registers, mappings, shared libs).
 #       - Every crash gets its own timestamped crash_report file
 #         (original appends everything into one debug.log).
+#       - Console capture via pty: operator keeps the live view and
+#         the report gets the last 100 lines of both streams, CR and
+#         ANSI codes stripped. Fallback to plain tty if `script` is
+#         missing (with a warning).
 #       - systemd-coredump supported: if core_pattern is a pipe
 #         handler, the dump is exported via coredumpctl.
+#       - Core dump management: after analysis the core is renamed
+#         and old dumps are rotated (3 newest kept); original left
+#         cores untracked.
 #       - Crash-loop guard: gives up after repeated quick crashes
 #         (original restarts forever).
-#       - Console capture via pty: operator keeps the live view and
-#         the report gets the last 100 lines of both streams.
+#       - Debug mode: `ulimit -c unlimited` (original: 2000) and
+#         MALLOC_CHECK_=3 heap-corruption detection.
+#       - Exit signal is decoded into a name in the report.
 #       - Strict arg parsing: script-only args (-debug/-norestart/
-#         -timeout/-binary) are never leaked to the server; a missing
-#         value is an error (original's arg loop could just be wrong).
+#         -timeout/-binary) are never leaked to the server; missing
+#         values or a non-numeric -timeout are hard errors (original
+#         silently misparsed such lines).
 #       - hlds_linux exit code is propagated with `script -e`
 #         (some old wrapper versions always exited 0).
 #
