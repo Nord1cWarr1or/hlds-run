@@ -6,6 +6,26 @@
 #       With -debug: core dumps + full crash reports (system state,
 #       console tail, GDB analysis).
 #
+#       Improvements over the original Valve hlds_run:
+#       - Real crash reports instead of a bare `bt` in debug.log:
+#         signal, system state, engine env, md5 of the binary and all
+#         .so, core dump settings, console tail, full GDB analysis
+#         (bt full all threads, registers, mappings, shared libs).
+#       - Every crash gets its own timestamped crash_report file
+#         (original appends everything into one debug.log).
+#       - systemd-coredump supported: if core_pattern is a pipe
+#         handler, the dump is exported via coredumpctl.
+#       - Crash-loop guard: gives up after repeated quick crashes
+#         (original restarts forever).
+#       - Console capture via pty: operator keeps the live view and
+#         the report gets the last 100 lines of both streams.
+#       - Strict arg parsing: script-only args (-debug/-norestart/
+#         -timeout/-binary) are never leaked to the server; a missing
+#         value is an error (original's arg loop could just be wrong).
+#       - hlds_linux exit code is propagated with `script -e`
+#         (some old wrapper versions always exited 0).
+#
+
 export LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH"
 set -o pipefail
 
