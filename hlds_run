@@ -1,0 +1,220 @@
+#!/bin/bash
+#
+#       FINAL, ROBUST VERSION v10
+#       Goal: maximum diagnostics on ANY crash, without touching the
+#       server's I/O behavior (heap-layout safety).
+#
+#       Console capture (default, no options): the server runs on a pty via
+#       `script` - stdout+stderr mirrored BOTH to the operator's terminal
+#       (live view) and a temp typescript; -e keeps the exit code. Crash
+#       report gets the last 100 lines of both streams; no dependency on
+#       LinuxGSM or engine console logs. Falls back to plain tty only when
+#       `script` is not installed (no user-facing options by design).
+#
+#       Kept fixes:
+#       - Script-only args (-debug/-timeout/-norestart/-binary) parsed,
+#         not leaked to hlds_linux (Valve hlds_run semantics).
+#       - dmesg errors land in the report (2>&1).
+#       - MALLOC_CHECK_=3 enabled only with -debug.
+#       - Core dump auto-rotation: 3 newest kept.
+#       - hlds_linux exit code propagated (v4 always exited 0).
+#
+
+export LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH"
+set -o pipefail
+
+# --- Global Configuration ---
+GAME="valve"
+DEBUG=0
+RESTART="yes"
+HL="./hlds_linux"
+TIMEOUT=10
+GDB="gdb"
+# --- End of Global Configuration ---
+
+
+init() {
+	SRV_ARGS=()
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		"-game") GAME="$2"; SRV_ARGS+=("-game" "$2"); shift 2 ;;
+		"-binary") HL="$2"; shift 2 ;;
+		"-timeout") TIMEOUT="$2"; shift 2 ;;
+		"-debug") DEBUG=1; shift ;;
+		"-norestart") RESTART=""; shift ;;
+		*) SRV_ARGS+=("$1"); shift ;;
+		esac
+	done
+	if [[ ! -d "$GAME" ]]; then echo "Error: Invalid game type '$GAME'"; exit 1; fi
+	if [[ ! -x "$HL" ]]; then echo "Error: Binary '$HL' not found or not executable."; exit 1; fi
+	CAPTURE=1
+	if ! command -v script &> /dev/null; then
+		echo "Warning: 'script' not found - capture disabled, plain tty mode."
+		CAPTURE=0
+	fi
+	if [[ "$DEBUG" -eq 1 ]]; then
+		echo "Debug mode is enabled. Core dumps will be generated on crash."
+		ulimit -c unlimited
+		if ! command -v "$GDB" &> /dev/null; then echo "Warning: 'gdb' not found."; fi
+		# Loud heap-corruption detection for this debug session only.
+		export MALLOC_CHECK_=3
+		# OPTIONAL: fill freed memory with garbage (0xAA) and fresh allocations
+		# with ~0xAA so use-after-free and reads of freed/stale data trip almost
+		# immediately. Adds memset on every malloc/free - noticeable overhead.
+		# Uncomment for maximum-radar debugging sessions:
+		# export MALLOC_PERTURB_=170
+	fi
+}
+
+log_message() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] - $1"
+}
+
+# Console capture: `script` runs the server on a pty (line buffering
+# identical to plain tty), mirroring stdout+stderr to both the operator's
+# terminal and a temp typescript; -e keeps the exit code. The crash report
+# includes the last 100 lines of both streams; no dependency on LinuxGSM
+# or engine console logs.
+launch_server() {
+	CONSOLE_TAIL=""
+	local caplog
+	caplog=$(mktemp)
+	if [[ "$CAPTURE" -eq 1 ]]; then
+		script -qec "\"$HL\" ${SRV_ARGS[*]} 2>&1" "$caplog"
+		local exitcode=$?
+	else
+		"$HL" "${SRV_ARGS[@]}"
+		local exitcode=$?
+	fi
+	if [[ -f "$caplog" ]]; then
+		# Strip `script` session annotations from the tail.
+		CONSOLE_TAIL=$(tail -n 100 "$caplog" | grep -v '^Script \(started\|done\)')
+		rm -f "$caplog"
+	fi
+	return $exitcode
+}
+
+debugcore() {
+	local exitcode=$1
+    if [[ $exitcode -eq 0 || $DEBUG -eq 0 ]]; then
+        if [[ $exitcode -ne 0 ]]; then log_message "Server crashed, but debug mode is OFF."; fi
+        return
+    fi
+
+    log_message "CRASH DETECTED (Exit Code: $exitcode). Generating comprehensive crash report..."
+
+    local CRASH_LOG_FILE="crash_report_$(date +'%Y-%m-%d_%H-%M-%S').txt"
+    log_message "Crash report will be saved to: $CRASH_LOG_FILE"
+
+    local CORE_FILE
+    CORE_FILE=$(find . -maxdepth 1 -name 'core*' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
+
+	{
+		echo -e "\n======================================================================"
+		echo "=== CRASH REPORT - $(date) ==="
+		echo "======================================================================"
+		echo ""
+		echo "Exit Code:   $exitcode"
+		if [[ "$exitcode" -gt 128 ]]; then
+			echo "Stop Signal: $(kill -l "$(( exitcode - 128 ))" 2>/dev/null || echo "signal $(( exitcode - 128 ))")"
+		fi
+		echo "Start Line:  $HL ${SRV_ARGS[*]}"
+		echo ""
+		echo "----------------------------------------------------------------------"
+		echo "--- SYSTEM STATE AT TIME OF CRASH ---"
+		echo "----------------------------------------------------------------------"
+		echo "[*] Kernel Version:"; uname -a; echo ""
+		echo "[*] System Uptime and Load:"; uptime; echo ""
+		echo "[*] CPU Usage (top 15 processes):"; ps -eo pid,pcpu,pmem,user,args --sort=-pcpu | head -n 15; echo ""
+		echo "[*] Memory Usage (MB):"; free -m; echo ""
+		local swapinfo; swapinfo="$(cat /proc/swaps 2>&1 | tail -n +2)"
+		echo "[*] Swap:"; if [[ -n "$swapinfo" ]]; then echo "$swapinfo"; else echo "(no swap enabled)"; fi; echo ""
+		echo "[*] Top 10 processes by memory (RSS):"; ps -eo pid,rss,pmem,user,args --sort=-rss | head -n 11; echo ""
+		echo "[*] Disk Space Usage:"; df -h; echo ""
+		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|MALLOC_|STEAM|TERM|HOME|PATH)'; echo ""
+		echo "[*] Library checksums (all .so in server root):"; find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
+		echo "[*] Game DLLs ($GAME/dlls):"; find "$GAME/dlls" -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
+		echo "[*] Core dump settings:"; echo "ulimit -c: $(ulimit -c)"; echo "kernel.core_pattern: $(cat /proc/sys/kernel/core_pattern 2>&1)"; echo ""
+		echo "[*] Listening sockets (TCP):"; ss -ltnp 2>&1 | head -n 15; echo ""
+		echo "[*] Listening sockets (UDP):"; ss -ulnp 2>&1 | head -n 15; echo ""
+		echo "[*] Kernel Messages (dmesg last 50, common noise filtered):"; dmesg 2>&1 | grep -viE 'UFW BLOCK|audit:' | tail -n 50; echo ""
+
+		if [[ -n "$CONSOLE_TAIL" ]]; then
+			echo "----------------------------------------------------------------------"
+			echo "--- SERVER OUTPUT (stdout+stderr, last 100 lines) ---"
+			echo "----------------------------------------------------------------------"
+			echo "$CONSOLE_TAIL"
+			echo ""
+		fi
+
+		if [[ -z "$CORE_FILE" || ! -f "$CORE_FILE" ]]; then
+			echo "--- GDB ANALYSIS (SKIPPED: Core dump file not found) ---"
+		else
+			echo "----------------------------------------------------------------------"
+			echo "--- GDB ANALYSIS of Core Dump: '$CORE_FILE' ---"
+			echo "----------------------------------------------------------------------"
+			cat > gdb_commands.txt <<-EOF
+			set pagination off
+			set confirm off
+			info threads
+			thread apply all bt full
+			info registers
+			x/32i \$pc-32
+			info frame
+			info args
+			info locals
+			info proc mappings
+			info sharedlibrary
+			quit
+			EOF
+
+			"$GDB" "$HL" "$CORE_FILE" -x gdb_commands.txt -batch
+
+			rm gdb_commands.txt
+			local new_core_name="crash_core.$(date +%F_%T).dmp"
+			mv "$CORE_FILE" "$new_core_name"
+			# Rotate old core dumps: keep the 3 newest, delete the rest.
+			ls -1t crash_core.*.dmp 2>/dev/null | tail -n +4 | xargs -r rm -f
+			log_message "Old core dumps rotated (kept 3 newest)." >&2
+			echo ""
+			echo "Core dump file has been analyzed and renamed to '$new_core_name'"
+		fi
+		echo "======================================================================"
+		echo "=== END OF CRASH REPORT ==="
+		echo "======================================================================"
+
+	} >> "$CRASH_LOG_FILE"
+}
+
+run() {
+	log_message "Server command: $HL ${SRV_ARGS[*]}"
+	if [[ -n "$RESTART" ]]; then
+		log_message "Auto-restart is enabled. Use Ctrl+C inside the 'screen' console to stop."
+		while true; do
+			log_message "Starting server..."
+			launch_server
+			local retval=$?
+			if [[ $retval -eq 0 || $retval -eq 130 ]]; then
+                log_message "Server shut down cleanly. Exiting script."
+                break
+            fi
+			debugcore $retval
+			log_message "Server process crashed. Restarting in $TIMEOUT seconds..."
+			sleep "$TIMEOUT"
+		done
+		return 0
+	else
+		log_message "Starting server (no restart)"
+		launch_server
+		local exitcode=$?
+		debugcore $exitcode
+		return $exitcode
+	fi
+}
+
+# --- Main Execution ---
+init "$@"
+run
+exitcode=$?
+log_message "Script finished."
+exit $exitcode
