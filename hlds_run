@@ -1,23 +1,21 @@
 #!/bin/bash
 #
-#       FINAL, ROBUST VERSION v10
-#       Goal: maximum diagnostics on ANY crash, without touching the
-#       server's I/O behavior (heap-layout safety).
+#       HLDS crash-diagnostics wrapper, drop-in for Valve hlds_run.
+#       Runs the server; on a crash (after -debug) writes a full
+#       crash report: system state, console tail, GDB analysis of the
+#       core dump. Auto-restart loop with a crash-loop guard.
 #
-#       Console capture (default, no options): the server runs on a pty via
-#       `script` - stdout+stderr mirrored BOTH to the operator's terminal
-#       (live view) and a temp typescript; -e keeps the exit code. Crash
-#       report gets the last 100 lines of both streams; no dependency on
-#       LinuxGSM or engine console logs. Falls back to plain tty only when
-#       `script` is not installed (no user-facing options by design).
+#       Script-only args, NOT forwarded to hlds_linux:
+#         -debug          core dumps + crash reports
+#         -norestart      no restart loop, propagate exit code
+#         -timeout N      seconds between restarts (default 10)
+#         -binary PATH    server binary (default ./hlds_linux)
 #
-#       Kept fixes:
-#       - Script-only args (-debug/-timeout/-norestart/-binary) parsed,
-#         not leaked to hlds_linux (Valve hlds_run semantics).
-#       - dmesg errors land in the report (2>&1).
-#       - MALLOC_CHECK_=3 enabled only with -debug.
-#       - Core dump auto-rotation: 3 newest kept.
-#       - hlds_linux exit code propagated (v4 always exited 0).
+#       Console capture: the server runs on a pty via `script` -
+#       stdout+stderr mirrored to the operator's terminal AND a temp
+#       typescript; -e keeps the exit code. Last 100 lines of both
+#       streams go into the crash report. Falls back to plain tty
+#       only if `script` is not installed.
 #
 
 export LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH"
@@ -77,11 +75,8 @@ log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] - $1"
 }
 
-# Console capture: `script` runs the server on a pty (line buffering
-# identical to plain tty), mirroring stdout+stderr to both the operator's
-# terminal and a temp typescript; -e keeps the exit code. The crash report
-# includes the last 100 lines of both streams; no dependency on LinuxGSM
-# or engine console logs.
+# Capture: run on a pty so the operator keeps the live console view while
+# a temp typescript collects stdout+stderr for the crash report tail.
 launch_server() {
 	CONSOLE_TAIL=""
 	local caplog
@@ -200,6 +195,7 @@ debugcore() {
 			quit
 			EOF
 
+			# Stripped binaries pepper every frame with "No symbol table info" - drop the noise.
 			"$GDB" "$HL" "$CORE_FILE" -x gdb_commands.txt -batch 2>&1 | sed '/No symbol table info available/d'
 
 			rm gdb_commands.txt
@@ -212,7 +208,6 @@ debugcore() {
 			else
 				local new_core_name="crash_core.$(date +%F_%T).dmp"
 				mv "$CORE_FILE" "$new_core_name"
-				# Rotate old core dumps: keep the 3 newest, delete the rest.
 				ls -1t crash_core.*.dmp 2>/dev/null | tail -n +4 | xargs -r rm -f
 				log_message "Old core dumps rotated (kept 3 newest)." >&2
 				echo ""
