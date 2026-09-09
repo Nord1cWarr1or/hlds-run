@@ -5,19 +5,8 @@
 #       crash report: system state, console tail, GDB analysis of the
 #       core dump. Auto-restart loop with a crash-loop guard.
 #
-#       Script-only args, NOT forwarded to hlds_linux:
-#         -debug          core dumps + crash reports
-#         -norestart      no restart loop, propagate exit code
-#         -timeout N      seconds between restarts (default 10)
-#         -binary PATH    server binary (default ./hlds_linux)
+#       Usage, options and details: see README.md in this repo.
 #
-#       Console capture: the server runs on a pty via `script` -
-#       stdout+stderr mirrored to the operator's terminal AND a temp
-#       typescript; -e keeps the exit code. Last 100 lines of both
-#       streams go into the crash report. Falls back to plain tty
-#       only if `script` is not installed.
-#
-
 export LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH"
 set -o pipefail
 
