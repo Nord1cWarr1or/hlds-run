@@ -315,6 +315,9 @@ debugcore() {
     log_message "Crash report will be saved to: $CRASH_LOG_FILE"
 
     local CORE_FILE
+    # Recorded here, emitted inside the report block below: a note printed
+    # to the terminal would not survive in the archived report.
+    local core_note=""
     CORE_FILE=$(find . -maxdepth 1 -type f -name 'core*' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
     if [[ ! -f "$CORE_FILE" ]]; then
         CORE_FILE=""
@@ -332,7 +335,7 @@ debugcore() {
             # file(1) missing: cannot verify the ELF type. Do NOT reject the
             # dump (mtime already passed) - proceed with GDB, but say so.
             log_message "Warning: 'file' is not installed - skipping the ELF core-file check."
-            echo "--- NOTE: 'file' is not installed; the dump passed the mtime check only."
+            core_note="--- NOTE: 'file' is not installed; the dump passed the mtime check only."
         elif [[ -n "$CORE_FILE" ]] && ! file "$CORE_FILE" 2>/dev/null | grep -qE 'ELF.*(core|coredump)'; then
             log_message "Warning: newest core* is not a core dump from this server run - ignoring it."
             CORE_FILE=""
@@ -417,6 +420,7 @@ debugcore() {
 			echo "----------------------------------------------------------------------"
 			echo "--- GDB ANALYSIS of Core Dump: '$CORE_FILE' ---"
 			echo "----------------------------------------------------------------------"
+			if [[ -n "$core_note" ]]; then echo "$core_note"; echo ""; fi
 			# One batch invocation (the core is loaded once) with section
 			# headers printed by gdb itself via echo - the report stays
 			# split into labeled, greppable sections.
