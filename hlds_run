@@ -274,7 +274,7 @@ launch_server() {
 	if [[ -f "$CAPLOG_FILE" ]]; then
 		# The pty turns \n into \r\n and the engine prints ANSI colors:
 		# strip CRs and escape sequences, then drop `script` annotations.
-		CONSOLE_TAIL=$(tail -n 100 "$CAPLOG_FILE" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)')
+		CONSOLE_TAIL=$(tail -n 100 "$CAPLOG_FILE" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)' | grep -v 'from LD_PRELOAD cannot be preloaded')
 		rm -f "$CAPLOG_FILE"
 		CAPLOG_FILE=""
 	fi
@@ -462,9 +462,11 @@ run() {
 			launch_server
 			local retval=$?
 			local life=$(( $(date +%s) - start_ts ))
-			if [[ $retval -eq 0 || $retval -eq 130 ]]; then
+			if [[ $retval -eq 0 || $retval -eq 130 || $retval -eq 143 ]]; then
                 if [[ $retval -eq 130 ]]; then
 					log_message "Server stopped by operator (SIGINT). Exiting script."
+				elif [[ $retval -eq 143 ]]; then
+					log_message "Server stopped by signal (SIGTERM). Exiting script."
 				else
 					log_message "Server shut down cleanly. Exiting script."
 				fi
