@@ -150,10 +150,23 @@ make_launcher() {
 
 launch_server() {
 	CONSOLE_TAIL=""
-	CAPLOG_FILE=$(mktemp)
+	# Keep the typescript on disk next to the server (never in /tmp:
+	# on many systems it is tmpfs and a chatty console can eat RAM).
+	# --output-limit is a runaway-console safety net (util-linux >= 2.32);
+	# failures to apply it are harmless - the limit is far above the
+	# ~100 lines the report actually reads.
+	CAPLOG_FILE=$(mktemp "./.caplog.XXXXXX")
+	local limit_args=()
+	if script --help 2>&1 | grep -q -- '--output-limit'; then
+		limit_args=(--output-limit 200MiB)
+	fi
 	if [[ "$CAPTURE" -eq 1 ]]; then
 		make_launcher
-		script -qec "\"$LAUNCHER_FILE\"" "$CAPLOG_FILE"
+		if [[ ${#limit_args[@]} -gt 0 ]]; then
+			script -q -e "${limit_args[@]}" "$CAPLOG_FILE" -c "\"$LAUNCHER_FILE\""
+		else
+			script -qec "\"$LAUNCHER_FILE\"" "$CAPLOG_FILE"
+		fi
 		local exitcode=$?
 		rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""
 	else
