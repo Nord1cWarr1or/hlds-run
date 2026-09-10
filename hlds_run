@@ -24,7 +24,8 @@
 #         cores untracked.
 #       - Crash-loop guard: gives up after repeated quick crashes
 #         (original restarts forever).
-#       - Debug mode: `ulimit -c unlimited` (original: 2000).
+#       - Debug mode: `ulimit -c unlimited` (original: 2000) and
+#         MALLOC_CHECK_=3 heap-corruption detection.
 #       - Exit signal is decoded into a name in the report.
 #       - Strict arg parsing: script-only args (-debug/-norestart/
 #         -timeout/-binary) are never leaked to the server; missing
@@ -98,17 +99,44 @@ init() {
 			echo "Warning: core dumps could not be enabled (hard limit is 0 - container or service limits?)."
 		fi
 		if ! command -v "$GDB" &> /dev/null; then echo "Warning: 'gdb' not found."; fi
-		# NOTE: MALLOC_CHECK_/MALLOC_PERTURB_/LD_PRELOAD(heap-debug) were
-		# dropped on purpose. The glibc debug malloc (libc_malloc_debug.so,
-		# glibc >= 2.34) REARRANGES THE HEAP: layout-sensitive corruption
-		# stops firing and the crash disappears under -debug (verified on
-		# Debian 13: crashes at SteamGameServer_Init stopped reproducing
-		# with the preload in place). Reproducible crashes matter more:
-		# a dump is taken every run, exactly as in production.
-		# For active heap radar, set these manually in the environment:
-		#   LD_PRELOAD=/lib/i386-linux-gnu/libc_malloc_debug.so.0
-		#   MALLOC_CHECK_=3        # no-op on glibc < 2.34 without the preload
-		#   MALLOC_PERTURB_=170    # 0xAA fill, catches use-after-free
+		# Loud heap-corruption detection for this debug session only.
+		#
+		# glibc >= 2.34 (Debian 12+, Arch, Ubuntu 22+): the debug malloc
+		# lives in libc_malloc_debug.so and is NOT active unless preloaded.
+		# On older glibc (Debian 11, CentOS) the variable works by itself.
+		# Detect the 32-bit object (the HLDS binary is 32-bit); on systems
+		# without it the plain MALLOC_CHECK_ export below still applies.
+		local mdebug_lib ldconfig_bin candidate
+		mdebug_lib="$(ldconfig -p 2>/dev/null | awk '/libc_malloc_debug/ && /\(libc6\) =>/ {print $NF; exit}')"
+		if [[ -z "$mdebug_lib" ]]; then
+			# ldconfig lives in /usr/sbin - not in a regular user's PATH
+			# (e.g. the service user running this wrapper).
+			for ldconfig_bin in /sbin/ldconfig /usr/sbin/ldconfig; do
+				[[ -x "$ldconfig_bin" ]] || continue
+				mdebug_lib="$("$ldconfig_bin" -p 2>/dev/null | awk '/libc_malloc_debug/ && /\(libc6\) =>/ {print $NF; exit}')"
+				[[ -n "$mdebug_lib" ]] && break
+			done
+		fi
+		if [[ -z "$mdebug_lib" ]]; then
+			# Last resort: known multiarch locations of the 32-bit object.
+			for candidate in /usr/lib/i386-linux-gnu/libc_malloc_debug.so.0 /usr/lib32/libc_malloc_debug.so.0 /lib32/libc_malloc_debug.so.0; do
+				[[ -e "$candidate" ]] && { mdebug_lib="$candidate"; break; }
+			done
+		fi
+		if [[ -n "$mdebug_lib" ]]; then
+			export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$mdebug_lib"
+			echo "Heap debugging: preloading $mdebug_lib (glibc >= 2.34 requires it)."
+		else
+			echo "Heap debugging: MALLOC_CHECK_ set natively (no libc_malloc_debug found)."
+		fi
+		export MALLOC_CHECK_=3
+		# OPTIONAL: fill fresh allocations with garbage (0xAA) and freed memory
+		# with ~0xAA so use-after-free and reads of freed/stale data trip almost
+		# immediately. Adds memset on every malloc/free - noticeable overhead.
+		# Works on every glibc, no preload needed. Note: with the preload the
+		# heap layout differs from non-debug runs - crashes may surface at
+		# different points. Uncomment for maximum-radar debugging sessions:
+		# export MALLOC_PERTURB_=170
 	fi
 }
 
