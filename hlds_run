@@ -106,8 +106,23 @@ init() {
 		# On older glibc (Debian 11, CentOS) the variable works by itself.
 		# Detect the 32-bit object (the HLDS binary is 32-bit); on systems
 		# without it the plain MALLOC_CHECK_ export below still applies.
-		local mdebug_lib
+		local mdebug_lib ldconfig_bin candidate
 		mdebug_lib="$(ldconfig -p 2>/dev/null | awk '/libc_malloc_debug/ && /\(libc6\) =>/ {print $NF; exit}')"
+		if [[ -z "$mdebug_lib" ]]; then
+			# ldconfig lives in /usr/sbin - not in a regular user's PATH
+			# (e.g. the service user running this wrapper).
+			for ldconfig_bin in /sbin/ldconfig /usr/sbin/ldconfig; do
+				[[ -x "$ldconfig_bin" ]] || continue
+				mdebug_lib="$("$ldconfig_bin" -p 2>/dev/null | awk '/libc_malloc_debug/ && /\(libc6\) =>/ {print $NF; exit}')"
+				[[ -n "$mdebug_lib" ]] && break
+			done
+		fi
+		if [[ -z "$mdebug_lib" ]]; then
+			# Last resort: known multiarch locations of the 32-bit object.
+			for candidate in /usr/lib/i386-linux-gnu/libc_malloc_debug.so.0 /usr/lib32/libc_malloc_debug.so.0 /lib32/libc_malloc_debug.so.0; do
+				[[ -e "$candidate" ]] && { mdebug_lib="$candidate"; break; }
+			done
+		fi
 		if [[ -n "$mdebug_lib" ]]; then
 			export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$mdebug_lib"
 			echo "Heap debugging: preloading $mdebug_lib (glibc >= 2.34 requires it)."
