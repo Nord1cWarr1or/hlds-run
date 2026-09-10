@@ -99,7 +99,12 @@ launch_server() {
 	local caplog
 	caplog=$(mktemp)
 	if [[ "$CAPTURE" -eq 1 ]]; then
-		script -qec "\"$HL\" ${SRV_ARGS[*]} 2>&1" "$caplog"
+		# Rebuild the command with %q: `script -c` re-parses its argument
+		# through the shell, so every server arg must be quoted per-item
+		# or spaces inside it would split - and metacharacters would run.
+		local cmd
+		printf -v cmd '%q ' "$HL" "${SRV_ARGS[@]}"
+		script -qec "$cmd 2>&1" "$caplog"
 		local exitcode=$?
 	else
 		"$HL" "${SRV_ARGS[@]}"
