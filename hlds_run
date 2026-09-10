@@ -41,11 +41,13 @@ set -o pipefail
 # --- Temporary-state tracking + cleanup on any exit path ---
 CAPLOG_FILE=""
 GDB_CMDS_FILE=""
+LAUNCHER_FILE=""
 systemd_tmp_core=""
 
 cleanup_temp() {
 	[[ -n "$CAPLOG_FILE" ]] && { rm -f "$CAPLOG_FILE"; CAPLOG_FILE=""; }
 	[[ -n "$GDB_CMDS_FILE" ]] && { rm -f "$GDB_CMDS_FILE"; GDB_CMDS_FILE=""; }
+	[[ -n "$LAUNCHER_FILE" ]] && { rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""; }
 	[[ -n "$systemd_tmp_core" ]] && { rm -rf "$(dirname "$systemd_tmp_core")"; systemd_tmp_core=""; }
 }
 
@@ -110,17 +112,31 @@ log_message() {
 
 # Capture: run on a pty so the operator keeps the live console view while
 # a temp typescript collects stdout+stderr for the crash report tail.
+LAUNCHER_FILE=""
+
+make_launcher() {
+	# `script -c` re-parses its command line through $SHELL (dash, fish...),
+	# and printf %q quoting is bash-specific - a mismatched shell mangles
+	# args with spaces/UTF-8. Instead: write a tiny launcher with a bash
+	# shebang; whatever shell `script` uses, it just executes that file,
+	# and the args are parsed by our bash. Reuses the %q technique, but
+	# only where it is guaranteed valid.
+	LAUNCHER_FILE=$(mktemp)
+	printf '#!/bin/bash\nexec %q ' "$HL" > "$LAUNCHER_FILE"
+	local a
+	for a in "${SRV_ARGS[@]}"; do printf '%q ' "$a" >> "$LAUNCHER_FILE"; done
+	printf '2>&1\n' >> "$LAUNCHER_FILE"
+	chmod +x "$LAUNCHER_FILE"
+}
+
 launch_server() {
 	CONSOLE_TAIL=""
 	CAPLOG_FILE=$(mktemp)
 	if [[ "$CAPTURE" -eq 1 ]]; then
-		# Rebuild the command with %q: `script -c` re-parses its argument
-		# through the shell, so every server arg must be quoted per-item
-		# or spaces inside it would split - and metacharacters would run.
-		local cmd
-		printf -v cmd '%q ' "$HL" "${SRV_ARGS[@]}"
-		script -qec "$cmd 2>&1" "$CAPLOG_FILE"
+		make_launcher
+		script -qec "\"$LAUNCHER_FILE\"" "$CAPLOG_FILE"
 		local exitcode=$?
+		rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""
 	else
 		"$HL" "${SRV_ARGS[@]}"
 		local exitcode=$?
