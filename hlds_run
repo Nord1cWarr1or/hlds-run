@@ -67,6 +67,9 @@ GDB="gdb"
 # server ran for less than HEALTHY_UPTIME seconds (quick-fail loop).
 STREAK_LIMIT=5
 HEALTHY_UPTIME=300
+# LD_PRELOAD path resolved by init() in -debug mode; applied to the
+# server process only (not the wrapper's own helpers).
+HEAP_PRELOAD=""
 # --- End of Global Configuration ---
 
 
@@ -124,9 +127,15 @@ init() {
 			done
 		fi
 		if [[ -n "$mdebug_lib" ]]; then
-			export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$mdebug_lib"
-			echo "Heap debugging: preloading $mdebug_lib (glibc >= 2.34 requires it)."
+			# NOT exported globally: every 64-bit helper of the wrapper
+			# (date, mktemp, script, launcher bash) would inherit it and
+			# print "wrong ELF class: ELFCLASS32" noise. The preload is
+			# injected into the launcher/env so only the server process
+			# (32-bit) sees it.
+			HEAP_PRELOAD="$mdebug_lib"
+			echo "Heap debugging: $mdebug_lib will be preloaded into the server (glibc >= 2.34 requires it)."
 		else
+			HEAP_PRELOAD=""
 			echo "Heap debugging: MALLOC_CHECK_ set natively (no libc_malloc_debug found)."
 		fi
 		export MALLOC_CHECK_=3
@@ -156,7 +165,14 @@ make_launcher() {
 	# and the args are parsed by our bash. Reuses the %q technique, but
 	# only where it is guaranteed valid.
 	LAUNCHER_FILE=$(mktemp)
-	printf '#!/bin/bash\nexec %q ' "$HL" > "$LAUNCHER_FILE"
+	printf '#!/bin/bash\n' > "$LAUNCHER_FILE"
+	if [[ -n "$HEAP_PRELOAD" ]]; then
+		# Set inside the launcher: `script` and the launcher bash itself
+		# run without the variable (no ELF-class noise from 64-bit
+		# helpers); `exec` passes it only to the server process.
+		printf 'export LD_PRELOAD=%q\n' "$HEAP_PRELOAD" >> "$LAUNCHER_FILE"
+	fi
+	printf 'exec %q ' "$HL" >> "$LAUNCHER_FILE"
 	local a
 	for a in "${SRV_ARGS[@]}"; do printf '%q ' "$a" >> "$LAUNCHER_FILE"; done
 	printf '2>&1\n' >> "$LAUNCHER_FILE"
@@ -171,6 +187,14 @@ launch_server() {
 	# failures to apply it are harmless - the limit is far above the
 	# ~100 lines the report actually reads.
 	CAPLOG_FILE=$(mktemp "./.caplog.XXXXXX")
+	# If the operator exported LD_PRELOAD themselves (e.g. following the
+	# README instructions), 64-bit helpers like `script` would print
+	# ELF-class noise into the console capture. The wrapper delivers the
+	# preload through the launcher/env - the shell-level variable is
+	# redundant here.
+	if [[ -z "$HEAP_PRELOAD" ]] && [[ -n "$LD_PRELOAD" ]]; then
+		unset LD_PRELOAD
+	fi
 	local limit_args=()
 	if script --help 2>&1 | grep -q -- '--output-limit'; then
 		limit_args=(--output-limit 200MiB)
@@ -185,7 +209,12 @@ launch_server() {
 		local exitcode=$?
 		rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""
 	else
-		"$HL" "${SRV_ARGS[@]}"
+		if [[ -n "$HEAP_PRELOAD" ]]; then
+			# No capture: still scope the preload to the server only.
+			env "LD_PRELOAD=$HEAP_PRELOAD" "$HL" "${SRV_ARGS[@]}"
+		else
+			"$HL" "${SRV_ARGS[@]}"
+		fi
 		local exitcode=$?
 	fi
 	if [[ -f "$CAPLOG_FILE" ]]; then
@@ -285,7 +314,7 @@ debugcore() {
 		echo "[*] Swap:"; if [[ -n "$swapinfo" ]]; then echo "$swapinfo"; else echo "(no swap enabled)"; fi; echo ""
 		echo "[*] Top 10 processes by memory (RSS):"; ps -eo pid,rss,pmem,user,args --sort=-rss | head -n 11; echo ""
 		echo "[*] Disk Space Usage:"; df -h; echo ""
-		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|LD_PRELOAD|MALLOC_CHECK_|MALLOC_PERTURB_|TERM|HOME)'; echo " (STEAM_*/PATH are withheld from the report on purpose)"; echo ""
+		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|LD_PRELOAD|MALLOC_CHECK_|MALLOC_PERTURB_|TERM|HOME)'; if [[ -n "$HEAP_PRELOAD" ]]; then echo "LD_PRELOAD=$HEAP_PRELOAD  (applied to the server process via launcher)"; fi; echo " (STEAM_*/PATH are withheld from the report on purpose)"; echo ""
 		echo "[*] Binary checksum ($HL):"; md5sum "$HL" 2>&1; echo ""
 		echo "[*] Library checksums (all .so in server root):"; find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
 		echo "[*] Game DLLs ($GAME/dlls):"; find "$GAME/dlls" -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
