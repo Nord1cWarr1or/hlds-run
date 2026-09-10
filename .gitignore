@@ -1,0 +1,9 @@
+# working artifacts of the wrapper itself
+.caplog.*
+crash_report_*.txt
+crash_core.*.dmp
+core
+core.*
+
+# unrelated files that must not ride along
+mitm_mcp_traffic.db
