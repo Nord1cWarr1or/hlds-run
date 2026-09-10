@@ -205,7 +205,7 @@ make_launcher() {
 		# land here (audit H1: operator's value is never silently dropped).
 		local all_preloads=""
 		[[ -n "$HEAP_PRELOAD" ]] && all_preloads="$HEAP_PRELOAD"
-		[[ -n "$operator_preload" ]] && all_preloads="${all_preloads:+$all_preload:}$operator_preload"
+		[[ -n "$operator_preload" ]] && all_preloads="${all_preloads:+$all_preloads:}$operator_preload"
 		printf 'export LD_PRELOAD=%q\n' "$all_preloads" >> "$LAUNCHER_FILE"
 	fi
 	printf 'exec %q ' "$HL" >> "$LAUNCHER_FILE"
