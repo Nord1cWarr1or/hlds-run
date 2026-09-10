@@ -145,7 +145,7 @@ debugcore() {
 
     log_message "CRASH DETECTED (Exit Code: $exitcode). Generating comprehensive crash report..."
 
-    local CRASH_LOG_FILE="crash_report_$(date +'%Y-%m-%d_%H-%M-%S').txt"
+    local CRASH_LOG_FILE="crash_report_$(date +'%Y-%m-%d_%H-%M-%S.%N').txt"
     log_message "Crash report will be saved to: $CRASH_LOG_FILE"
 
     local CORE_FILE
@@ -259,7 +259,7 @@ debugcore() {
 				echo ""
 				echo "Core dump was exported from systemd-coredump and removed after analysis."
 			else
-				local new_core_name="crash_core.$(date +%F_%T).dmp"
+				local new_core_name="crash_core.$(date +%F_%T.%N).dmp"
 				mv "$CORE_FILE" "$new_core_name"
 				ls -1t crash_core.*.dmp 2>/dev/null | tail -n +4 | xargs -r rm -f
 				log_message "Old core dumps rotated (kept 3 newest)." >&2
