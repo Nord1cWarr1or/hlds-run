@@ -76,7 +76,7 @@ init() {
 		"-binary") [[ $# -ge 2 ]] || { echo "Error: '$1' requires a value."; exit 1; }; HL="$2"; shift 2 ;;
 		"-timeout")
 			[[ $# -ge 2 ]] || { echo "Error: '-timeout' requires a value."; exit 1; }
-			[[ "$2" =~ ^[0-9]+$ ]] || { echo "Error: '-timeout' value must be a positive integer."; exit 1; }
+			[[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "Error: '-timeout' value must be a positive integer."; exit 1; }
 			TIMEOUT="$2"; shift 2 ;;
 		"-debug") DEBUG=1; shift ;;
 		"-norestart") RESTART=""; shift ;;
@@ -138,6 +138,8 @@ launch_server() {
 debugcore() {
 	local exitcode=$1
 	local since_ts=${2:-0}
+	# Clean stop (operator Ctrl+C or TERM) is never a crash - in either mode.
+	if [[ $exitcode -eq 130 || $exitcode -eq 143 ]]; then return; fi
     if [[ $exitcode -eq 0 || $DEBUG -eq 0 ]]; then
         if [[ $exitcode -ne 0 ]]; then log_message "Server crashed, but debug mode is OFF."; fi
         return
@@ -273,8 +275,13 @@ info locals"
 			else
 				local new_core_name="crash_core.$(date +%F_%T.%N).dmp"
 				mv "$CORE_FILE" "$new_core_name"
-				ls -1t crash_core.*.dmp 2>/dev/null | tail -n +4 | xargs -r rm -f
-				log_message "Old core dumps rotated (kept 3 newest)." >&2
+				local -a old_dumps=()
+				while IFS= read -r f; do old_dumps+=("$f"); done < <(find . -maxdepth 1 -name 'crash_core.*.dmp' -printf '%T@ %p\n' | sort -rn | tail -n +4 | cut -d' ' -f2-)
+				if [[ ${#old_dumps[@]} -gt 0 ]]; then
+					rm -f "${old_dumps[@]}"
+					log_message "Old core dumps rotated (kept 3 newest)." >&2
+					echo "Old core dumps rotated (kept 3 newest)."
+				fi
 				echo ""
 				echo "Core dump file has been analyzed and renamed to '$new_core_name'"
 			fi
