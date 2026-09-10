@@ -281,8 +281,10 @@ launch_server() {
 	fi
 	if [[ -f "$CAPLOG_FILE" ]]; then
 		# The pty turns \n into \r\n and the engine prints ANSI colors:
-		# strip CRs and escape sequences, then drop `script` annotations.
-		CONSOLE_TAIL=$(tail -n 100 "$CAPLOG_FILE" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)' | grep -v 'from LD_PRELOAD cannot be preloaded')
+		# strip CRs and escape sequences (ESC and '[' are literal here, so the
+		# substitution uses no GNU-only escapes and stays quiet under
+		# POSIXLY_CORRECT), then drop `script` annotations.
+		CONSOLE_TAIL=$(tail -n 100 "$CAPLOG_FILE" | tr -d '\r' | sed $'s/\033[[][0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)' | grep -v 'from LD_PRELOAD cannot be preloaded')
 		# --output-limit stops WRITING when reached: the tail is frozen at
 		# the truncation moment, not at the crash. Detect the marker so the
 		# report can warn about a possibly stale tail (audit H4).
@@ -472,16 +474,22 @@ debugcore() {
 				echo "Core dump was exported from systemd-coredump and removed after analysis."
 			else
 				local new_core_name="crash_core.$(date +%F_%T.%N).dmp"
-				mv "$CORE_FILE" "$new_core_name"
-				local -a old_dumps=()
-				while IFS= read -r f; do old_dumps+=("$f"); done < <(find . -maxdepth 1 -name 'crash_core.*.dmp' -printf '%T@ %p\n' | sort -rn | tail -n +4 | cut -d' ' -f2-)
-				if [[ ${#old_dumps[@]} -gt 0 ]]; then
-					rm -f "${old_dumps[@]}"
-					log_message "Old core dumps rotated (kept 3 newest)." >&2
-					echo "Old core dumps rotated (kept 3 newest)."
+				if mv "$CORE_FILE" "$new_core_name" 2>/dev/null; then
+					local -a old_dumps=()
+					while IFS= read -r f; do old_dumps+=("$f"); done < <(find . -maxdepth 1 -name 'crash_core.*.dmp' -printf '%T@ %p\n' | sort -rn | tail -n +4 | cut -d' ' -f2-)
+					if [[ ${#old_dumps[@]} -gt 0 ]]; then
+						rm -f "${old_dumps[@]}"
+						log_message "Old core dumps rotated (kept 3 newest)." >&2
+						echo "Old core dumps rotated (kept 3 newest)."
+					fi
+					echo ""
+					echo "Core dump file has been analyzed and renamed to '$new_core_name'"
+				else
+					# Say it plainly: the archive/report claim must not outlive
+					# the failure (read-only dir, full disk, missing mv...).
+					echo ""
+					echo "WARNING: the core dump could not be renamed to '$new_core_name' (read-only dir? disk full?) - it stays as '$CORE_FILE'."
 				fi
-				echo ""
-				echo "Core dump file has been analyzed and renamed to '$new_core_name'"
 			fi
 		fi
 		echo "======================================================================"
@@ -538,6 +546,15 @@ run() {
 		launch_server
 		local exitcode=$?
 		debugcore $exitcode "$start_ts"
+		# Same wording as in the restart branch: the operator should be able
+		# to tell a clean stop from a crash by reading the log tail.
+		if [[ $exitcode -eq 130 ]]; then
+			log_message "Server stopped by operator (SIGINT). Exiting script."
+		elif [[ $exitcode -eq 143 ]]; then
+			log_message "Server stopped by signal (SIGTERM). Exiting script."
+		elif [[ $exitcode -eq 0 ]]; then
+			log_message "Server shut down cleanly. Exiting script."
+		fi
 		return $exitcode
 	fi
 }
