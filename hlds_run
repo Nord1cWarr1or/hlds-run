@@ -100,22 +100,23 @@ init() {
 	done
 	if [[ ! -d "$GAME" ]]; then echo "Error: Invalid game type '$GAME'"; exit 1; fi
 	if [[ ! -x "$HL" ]]; then echo "Error: Binary '$HL' not found or not executable."; exit 1; fi
-	# Writable-workspace probe: both mktemp call sites (caplog in the
-	# server dir, launcher in TMPDIR) must succeed or the server cannot
-	# start at all - and without a check a missing temp file masquerades
-	# as a "crash" (audit G1/G3). Probe both locations up front.
-	local t
-	if ! t=$(mktemp 2>/dev/null); then
-		echo "Error: cannot create temp files in TMPDIR='${TMPDIR:-/tmp}' (read-only?) - launcher would be empty and the server would never start. Exiting."
-		exit 1
-	fi
-	rm -f "$t"
 	CAPTURE=1
 	if ! command -v script &> /dev/null; then
 		echo "Warning: 'script' not found - capture disabled, plain tty mode."
 		CAPTURE=0
 	fi
 	if [[ "$CAPTURE" -eq 1 ]]; then
+		# Writable-workspace probe: both mktemp call sites must succeed or
+		# the server cannot start at all - and without a check a missing
+		# temp file masquerades as a "crash" (audit G1/G3). The launcher
+		# lives in TMPDIR, the console capture in the server dir. Neither is
+		# needed in plain-tty mode, so the probe runs only when capture is on.
+		local t
+		if ! t=$(mktemp 2>/dev/null); then
+			echo "Error: cannot create temp files in TMPDIR='${TMPDIR:-/tmp}' (read-only?) - launcher would be empty and the server would never start. Exiting."
+			exit 1
+		fi
+		rm -f "$t"
 		if ! t=$(mktemp "./.caplog.XXXXXX" 2>/dev/null); then
 			echo "Warning: cannot create ./.caplog.* in '$PWD' (read-only dir?) - console capture disabled, plain tty mode."
 			CAPTURE=0
