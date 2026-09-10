@@ -275,6 +275,13 @@ launch_server() {
 		# The pty turns \n into \r\n and the engine prints ANSI colors:
 		# strip CRs and escape sequences, then drop `script` annotations.
 		CONSOLE_TAIL=$(tail -n 100 "$CAPLOG_FILE" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)' | grep -v 'from LD_PRELOAD cannot be preloaded')
+		# --output-limit stops WRITING when reached: the tail is frozen at
+		# the truncation moment, not at the crash. Detect the marker so the
+		# report can warn about a possibly stale tail (audit H4).
+		if grep -q '<max output size exceeded>' "$CAPLOG_FILE" 2>/dev/null; then
+			CONSOLE_TAIL="[!] console capture was truncated (output limit reached) - this tail may be stale.
+$CONSOLE_TAIL"
+		fi
 		rm -f "$CAPLOG_FILE"
 		CAPLOG_FILE=""
 	fi
