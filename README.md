@@ -56,10 +56,11 @@ Drop-in замена оригинального `hlds_run` от Valve (сбор�
 - настройки core-дампа: `ulimit -c`, `kernel.core_pattern`
 - последние 100 строк stdout+stderr сервера. Из хвоста удалены
   `\r`, добавленные pty, ANSI-коды цвета и аннотации сессии `script`
-- GDB-анализ core-дампа: `thread apply all bt full`, регистры,
-  дизассемблирование вокруг `$pc`, `info proc mappings`, `info sharedlibrary`.
-  Повторяющийся шум `No symbol table info available` от стрипнутых
-  бинарников отфильтрован
+- GDB-анализ core-дампа, разбитый на подписанные подсекции —
+  `Stacktrace` (`thread apply all bt full`), `Registers and frame info`,
+  `Disassembly` (32 инструкции перед `$pc`), `Memory mappings`,
+  `Shared libraries`. Повторяющийся шум `No symbol table info available`
+  от стрипнутых бинарников отфильтрован
 
 ## Core-дампы
 
