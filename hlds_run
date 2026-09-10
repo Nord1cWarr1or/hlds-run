@@ -314,7 +314,15 @@ debugcore() {
         # an ELF core file - anything else named core* is not ours.
         local core_mtime
         core_mtime=$(stat -c %Y "$CORE_FILE" 2>/dev/null || echo 0)
-        if [[ $core_mtime -lt $since_ts ]] || ! file "$CORE_FILE" 2>/dev/null | grep -qE 'ELF.*(core|coredump)'; then
+        if [[ $core_mtime -lt $since_ts ]]; then
+            log_message "Warning: newest core* is older than this server run - ignoring it."
+            CORE_FILE=""
+        elif [[ -n "$CORE_FILE" ]] && ! command -v file &>/dev/null; then
+            # file(1) missing: cannot verify the ELF type. Do NOT reject the
+            # dump (mtime already passed) - proceed with GDB, but say so.
+            log_message "Warning: 'file' is not installed - skipping the ELF core-file check."
+            echo "--- NOTE: 'file' is not installed; the dump passed the mtime check only."
+        elif [[ -n "$CORE_FILE" ]] && ! file "$CORE_FILE" 2>/dev/null | grep -qE 'ELF.*(core|coredump)'; then
             log_message "Warning: newest core* is not a core dump from this server run - ignoring it."
             CORE_FILE=""
         fi
