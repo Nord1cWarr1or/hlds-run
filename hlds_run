@@ -79,6 +79,12 @@ HEAP_PRELOAD=""
 
 init() {
 	SRV_ARGS=()
+	# Operator LD_PRELOAD out of the SHELL scope immediately (audit H1):
+	# every helper below (date in log_message, mktemp, script, gdb check)
+	# is 64-bit and would print ELF-class noise otherwise. The value is
+	# kept and re-attached to the server run only, never silently dropped.
+	OPERATOR_PRELOAD="$LD_PRELOAD"
+	unset LD_PRELOAD
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		"-game") [[ $# -ge 2 ]] || { echo "Error: '$1' requires a value."; exit 1; }; GAME="$2"; SRV_ARGS+=("-game" "$2"); shift 2 ;;
@@ -192,11 +198,16 @@ make_launcher() {
 	LAUNCHER_FILE=$(mktemp) || { echo "Error: cannot create launcher temp file - aborting before launching the server."; exit 1; }
 	if [[ -z "$LAUNCHER_FILE" ]]; then echo "Error: empty launcher temp file name - aborting before launching the server."; exit 1; fi
 	printf '#!/bin/bash\n' > "$LAUNCHER_FILE"
-	if [[ -n "$HEAP_PRELOAD" ]]; then
+	if [[ -n "$HEAP_PRELOAD" || -n "$operator_preload" ]]; then
 		# Set inside the launcher: `script` and the launcher bash itself
 		# run without the variable (no ELF-class noise from 64-bit
-		# helpers); `exec` passes it only to the server process.
-		printf 'export LD_PRELOAD=%q\n' "$HEAP_PRELOAD" >> "$LAUNCHER_FILE"
+		# helpers); `exec` passes it only to the server process. Both the
+		# wrapper's own -debug preload and the operator's own LD_PRELOAD
+		# land here (audit H1: operator's value is never silently dropped).
+		local all_preloads=""
+		[[ -n "$HEAP_PRELOAD" ]] && all_preloads="$HEAP_PRELOAD"
+		[[ -n "$operator_preload" ]] && all_preloads="${all_preloads:+$all_preload:}$operator_preload"
+		printf 'export LD_PRELOAD=%q\n' "$all_preloads" >> "$LAUNCHER_FILE"
 	fi
 	printf 'exec %q ' "$HL" >> "$LAUNCHER_FILE"
 	local a
@@ -207,6 +218,14 @@ make_launcher() {
 
 launch_server() {
 	CONSOLE_TAIL=""
+	# operator_preload comes from init(): the operator's LD_PRELOAD was
+	# moved out of the SHELL scope there and re-attached to the server
+	# run here (capture: launcher export; non-capture: env prefix).
+	local operator_preload="${OPERATOR_PRELOAD:-}"
+	if [[ -n "$operator_preload" && "$operator_preload" == "$HEAP_PRELOAD" ]]; then
+		log_message "Operator LD_PRELOAD equals the wrapper's heap-debug library - not duplicated."
+		operator_preload=""
+	fi
 	# Keep the typescript on disk next to the server (never in /tmp:
 	# on many systems it is tmpfs and a chatty console can eat RAM).
 	# --output-limit is a runaway-console safety net (util-linux >= 2.32);
@@ -225,14 +244,6 @@ launch_server() {
 			CAPTURE=0
 		fi
 	fi
-	# If the operator exported LD_PRELOAD themselves (e.g. following the
-	# README instructions), 64-bit helpers like `script` would print
-	# ELF-class noise into the console capture. The wrapper delivers the
-	# preload through the launcher/env - the shell-level variable is
-	# redundant here.
-	if [[ -z "$HEAP_PRELOAD" ]] && [[ -n "$LD_PRELOAD" ]]; then
-		unset LD_PRELOAD
-	fi
 	local limit_args=()
 	if script --help 2>&1 | grep -q -- '--output-limit'; then
 		limit_args=(--output-limit 200MiB)
@@ -249,9 +260,12 @@ launch_server() {
 		local exitcode=$?
 		rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""
 	else
-		if [[ -n "$HEAP_PRELOAD" ]]; then
+		local combined_preload=""
+		[[ -n "$HEAP_PRELOAD" ]] && combined_preload="$HEAP_PRELOAD"
+		[[ -n "$operator_preload" ]] && combined_preload="${combined_preload:+$combined_preload:}$operator_preload"
+		if [[ -n "$combined_preload" ]]; then
 			# No capture: still scope the preload to the server only.
-			env "LD_PRELOAD=$HEAP_PRELOAD" "$HL" "${SRV_ARGS[@]}"
+			env "LD_PRELOAD=$combined_preload" "$HL" "${SRV_ARGS[@]}"
 		else
 			"$HL" "${SRV_ARGS[@]}"
 		fi
