@@ -271,13 +271,13 @@ debugcore() {
 		echo "[*] Top 10 processes by memory (RSS):"; ps -eo pid,rss,pmem,user,args --sort=-rss | head -n 11; echo ""
 		echo "[*] Disk Space Usage:"; df -h; echo ""
 		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|MALLOC_CHECK_|MALLOC_PERTURB_|TERM|HOME)'; echo " (STEAM_*/PATH are withheld from the report on purpose)"; echo ""
-		echo "[*] Binary checksum (hlds_linux):"; md5sum "$HL" 2>&1; echo ""
+		echo "[*] Binary checksum ($HL):"; md5sum "$HL" 2>&1; echo ""
 		echo "[*] Library checksums (all .so in server root):"; find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
 		echo "[*] Game DLLs ($GAME/dlls):"; find "$GAME/dlls" -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
 		echo "[*] Core dump settings:"; echo "ulimit -c: $(ulimit -c)"; echo "kernel.core_pattern: $(cat /proc/sys/kernel/core_pattern 2>&1)"; echo ""
-		echo "[*] Listening sockets (TCP):"; ss -ltnp 2>&1 | head -n 15; echo ""
-		echo "[*] Listening sockets (UDP):"; ss -ulnp 2>&1 | head -n 15; echo ""
-		echo "[*] Kernel Messages (dmesg last 50, common noise filtered):"; dmesg 2>&1 | grep -viE 'UFW BLOCK|audit:' | tail -n 50; echo ""
+		echo "[*] Listening sockets (TCP):"; if ss -ltnp >/dev/null 2>&1; then ss -ltnp | head -n 15; else echo "(unavailable: needs root for -p)"; ss -ltn | head -n 15; fi; echo ""
+		echo "[*] Listening sockets (UDP):"; if ss -ulnp >/dev/null 2>&1; then ss -ulnp | head -n 15; else echo "(unavailable: needs root for -p)"; ss -uln | head -n 15; fi; echo ""
+		echo "[*] Kernel Messages (dmesg last 50, common noise filtered):"; if dmesg >/dev/null 2>&1; then dmesg | grep -viE 'UFW BLOCK|audit:' | tail -n 50; else echo "(unavailable without root)"; fi; echo ""
 
 		if [[ -n "$CONSOLE_TAIL" ]]; then
 			echo "----------------------------------------------------------------------"
@@ -365,7 +365,11 @@ run() {
 			local retval=$?
 			local life=$(( $(date +%s) - start_ts ))
 			if [[ $retval -eq 0 || $retval -eq 130 ]]; then
-                log_message "Server shut down cleanly. Exiting script."
+                if [[ $retval -eq 130 ]]; then
+					log_message "Server stopped by operator (SIGINT). Exiting script."
+				else
+					log_message "Server shut down cleanly. Exiting script."
+				fi
                 break
             fi
 			# A crash after HEALTHY_UPTIME seconds of stable run is not part
