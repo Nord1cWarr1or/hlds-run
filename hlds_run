@@ -307,6 +307,11 @@ debugcore() {
 			local stop_log="server_stop_$(date +'%Y-%m-%d_%H-%M-%S.%N').log"
 			printf '%s\n' "Server stopped with exit code $exitcode ($(date)). Last console lines:" "$CONSOLE_TAIL" > "$stop_log"
 			chmod 600 "$stop_log"
+			# A stop-log is written on every clean stop, so rotate them like
+			# the core dumps: keep the 3 newest.
+			local -a old_stops=()
+			while IFS= read -r f; do old_stops+=("$f"); done < <(find . -maxdepth 1 -name 'server_stop_*.log' -printf '%T@ %p\n' | sort -rn | tail -n +4 | cut -d' ' -f2-)
+			if [[ ${#old_stops[@]} -gt 0 ]]; then rm -f "${old_stops[@]}"; fi
 		fi
 		return
 	fi

@@ -2,8 +2,12 @@
 .caplog.*
 crash_report_*.txt
 crash_core.*.dmp
+server_stop_*.log
 core
 core.*
+
+# leftover of a manual `script` run in the server root
+typescript
 
 # unrelated files that must not ride along
 mitm_mcp_traffic.db
