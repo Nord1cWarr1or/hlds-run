@@ -226,7 +226,7 @@ debugcore() {
 		echo "[*] Swap:"; if [[ -n "$swapinfo" ]]; then echo "$swapinfo"; else echo "(no swap enabled)"; fi; echo ""
 		echo "[*] Top 10 processes by memory (RSS):"; ps -eo pid,rss,pmem,user,args --sort=-rss | head -n 11; echo ""
 		echo "[*] Disk Space Usage:"; df -h; echo ""
-		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|MALLOC_|STEAM|TERM|HOME|PATH)'; echo ""
+		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|MALLOC_CHECK_|MALLOC_PERTURB_|TERM|HOME)'; echo " (STEAM_*/PATH are withheld from the report on purpose)"; echo ""
 		echo "[*] Binary checksum (hlds_linux):"; md5sum "$HL" 2>&1; echo ""
 		echo "[*] Library checksums (all .so in server root):"; find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
 		echo "[*] Game DLLs ($GAME/dlls):"; find "$GAME/dlls" -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
@@ -307,6 +307,10 @@ info locals"
 		echo "======================================================================"
 
 	} >> "$CRASH_LOG_FILE"
+
+	# Tighten the file's mode right after writing (umask alone is racy
+	# for the >>-created file when it did not exist yet).
+	chmod 600 "$CRASH_LOG_FILE"
 }
 
 run() {
