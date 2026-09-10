@@ -240,7 +240,9 @@ launch_server() {
 	if [[ "$CAPTURE" -eq 1 ]]; then
 		make_launcher
 		if [[ ${#limit_args[@]} -gt 0 ]]; then
-			script -q -e "${limit_args[@]}" "$CAPLOG_FILE" -c "\"$LAUNCHER_FILE\""
+			# -c BEFORE the positional file: under POSIXLY_CORRECT getopt
+			# stops parsing at the first positional argument (audit G4).
+			script -q -e "${limit_args[@]}" -c "\"$LAUNCHER_FILE\"" "$CAPLOG_FILE"
 		else
 			script -qec "\"$LAUNCHER_FILE\"" "$CAPLOG_FILE"
 		fi
