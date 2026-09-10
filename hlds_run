@@ -25,7 +25,11 @@
 #       - Crash-loop guard: gives up after repeated quick crashes
 #         (original restarts forever).
 #       - Debug mode: `ulimit -c unlimited` (original: 2000) and
-#         MALLOC_CHECK_=3 heap-corruption detection.
+#         MALLOC_CHECK_=3 heap-corruption detection. CAVEAT: the debug
+#         malloc changes the heap layout - layout-sensitive crashes can
+#         move or vanish entirely under -debug (verified live: crashes
+#         at SteamGameServer_Init stopped reproducing with the preload
+#         on glibc 2.41).
 #       - Exit signal is decoded into a name in the report.
 #       - Strict arg parsing: script-only args (-debug/-norestart/
 #         -timeout/-binary) are never leaked to the server; missing
@@ -139,6 +143,9 @@ init() {
 			echo "Heap debugging: MALLOC_CHECK_ set natively (no libc_malloc_debug found)."
 		fi
 		export MALLOC_CHECK_=3
+		# CAVEAT: even without the preload, on older glibc the native debug
+		# malloc also rearranges the heap - layout-sensitive crashes can
+		# move or vanish under -debug (see README, verified on Debian 13).
 		# OPTIONAL: fill fresh allocations with garbage (0xAA) and freed memory
 		# with ~0xAA so use-after-free and reads of freed/stale data trip almost
 		# immediately. Adds memset on every malloc/free - noticeable overhead.
