@@ -178,6 +178,17 @@ init() {
 		# different points. Uncomment for maximum-radar debugging sessions:
 		# export MALLOC_PERTURB_=170
 	fi
+	# The operator's LD_PRELOAD is never dropped: it is handed to the server
+	# (launcher export or env prefix) together with the wrapper's heap-debug
+	# library. Decide and report it once here, not on every launch.
+	if [[ -n "$OPERATOR_PRELOAD" ]]; then
+		if [[ -n "$HEAP_PRELOAD" && "$OPERATOR_PRELOAD" == "$HEAP_PRELOAD" ]]; then
+			log_message "Operator LD_PRELOAD equals the wrapper's heap-debug library - not duplicated."
+			OPERATOR_PRELOAD=""
+		else
+			log_message "Operator LD_PRELOAD passed to the server: $OPERATOR_PRELOAD"
+		fi
+	fi
 }
 
 log_message() {
@@ -217,14 +228,11 @@ make_launcher() {
 
 launch_server() {
 	CONSOLE_TAIL=""
-	# operator_preload comes from init(): the operator's LD_PRELOAD was
-	# moved out of the SHELL scope there and re-attached to the server
-	# run here (capture: launcher export; non-capture: env prefix).
+	# operator_preload comes from init(): the operator's LD_PRELOAD was moved
+	# out of the SHELL scope there, deduplicated against the heap-debug
+	# library and re-attached to the server run here (capture: launcher
+	# export; non-capture: env prefix).
 	local operator_preload="${OPERATOR_PRELOAD:-}"
-	if [[ -n "$operator_preload" && "$operator_preload" == "$HEAP_PRELOAD" ]]; then
-		log_message "Operator LD_PRELOAD equals the wrapper's heap-debug library - not duplicated."
-		operator_preload=""
-	fi
 	# Keep the typescript on disk next to the server (never in /tmp:
 	# on many systems it is tmpfs and a chatty console can eat RAM).
 	# --output-limit is a runaway-console safety net (util-linux >= 2.32);
