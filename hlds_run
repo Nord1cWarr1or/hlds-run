@@ -35,7 +35,7 @@
 #         (some old wrapper versions always exited 0).
 #
 
-export LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH=".${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 set -o pipefail
 
 # --- Temporary-state tracking + cleanup on any exit path ---
