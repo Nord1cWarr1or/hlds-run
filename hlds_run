@@ -277,7 +277,7 @@ debugcore() {
 run() {
 	log_message "Server command: $HL ${SRV_ARGS[*]}"
 	if [[ -n "$RESTART" ]]; then
-		log_message "Auto-restart is enabled. Use Ctrl+C inside the 'screen' console to stop."
+		log_message "Auto-restart is enabled. Press Ctrl+C in the server console to stop."
 		local CRASH_STREAK=0
 		while true; do
 			log_message "Starting server..."
