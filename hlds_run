@@ -292,7 +292,16 @@ debugcore() {
 	local exitcode=$1
 	local since_ts=${2:-0}
 	# Clean stop (operator Ctrl+C or TERM) is never a crash - in either mode.
-	if [[ $exitcode -eq 130 || $exitcode -eq 143 ]]; then return; fi
+	# The console tail is still worth keeping for the operator: save it
+	# next to the reports as a stop-log (audit H3).
+	if [[ $exitcode -eq 130 || $exitcode -eq 143 ]]; then
+		if [[ -n "$CONSOLE_TAIL" ]]; then
+			local stop_log="server_stop_$(date +'%Y-%m-%d_%H-%M-%S.%N').log"
+			printf '%s\n' "Server stopped with exit code $exitcode ($(date)). Last console lines:" "$CONSOLE_TAIL" > "$stop_log"
+			chmod 600 "$stop_log"
+		fi
+		return
+	fi
     if [[ $exitcode -eq 0 || $DEBUG -eq 0 ]]; then
         if [[ $exitcode -ne 0 ]]; then log_message "Server crashed, but debug mode is OFF."; fi
         return
@@ -478,6 +487,10 @@ run() {
 			local retval=$?
 			local life=$(( $(date +%s) - start_ts ))
 			if [[ $retval -eq 0 || $retval -eq 130 || $retval -eq 143 ]]; then
+				# Keep the console tail of the stopped run (audit H3) - the
+				# stop-log is written by debugcore for 130/143, nothing for
+				# a plain 0.
+				debugcore $retval "$start_ts"
                 if [[ $retval -eq 130 ]]; then
 					log_message "Server stopped by operator (SIGINT). Exiting script."
 				elif [[ $retval -eq 143 ]]; then
