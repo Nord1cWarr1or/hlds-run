@@ -38,6 +38,22 @@
 export LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH"
 set -o pipefail
 
+# --- Temporary-state tracking + cleanup on any exit path ---
+CAPLOG_FILE=""
+GDB_CMDS_FILE=""
+systemd_tmp_core=""
+
+cleanup_temp() {
+	[[ -n "$CAPLOG_FILE" ]] && { rm -f "$CAPLOG_FILE"; CAPLOG_FILE=""; }
+	[[ -n "$GDB_CMDS_FILE" ]] && { rm -f "$GDB_CMDS_FILE"; GDB_CMDS_FILE=""; }
+	[[ -n "$systemd_tmp_core" ]] && { rm -rf "$(dirname "$systemd_tmp_core")"; systemd_tmp_core=""; }
+}
+
+# Bash skips the EXIT trap on a fatal signal - route INT/TERM through exit.
+trap 'trap - INT; exit 130' INT
+trap 'trap - TERM; exit 143' TERM
+trap cleanup_temp EXIT
+
 # --- Global Configuration ---
 GAME="valve"
 DEBUG=0
@@ -96,25 +112,25 @@ log_message() {
 # a temp typescript collects stdout+stderr for the crash report tail.
 launch_server() {
 	CONSOLE_TAIL=""
-	local caplog
-	caplog=$(mktemp)
+	CAPLOG_FILE=$(mktemp)
 	if [[ "$CAPTURE" -eq 1 ]]; then
 		# Rebuild the command with %q: `script -c` re-parses its argument
 		# through the shell, so every server arg must be quoted per-item
 		# or spaces inside it would split - and metacharacters would run.
 		local cmd
 		printf -v cmd '%q ' "$HL" "${SRV_ARGS[@]}"
-		script -qec "$cmd 2>&1" "$caplog"
+		script -qec "$cmd 2>&1" "$CAPLOG_FILE"
 		local exitcode=$?
 	else
 		"$HL" "${SRV_ARGS[@]}"
 		local exitcode=$?
 	fi
-	if [[ -f "$caplog" ]]; then
+	if [[ -f "$CAPLOG_FILE" ]]; then
 		# The pty turns \n into \r\n and the engine prints ANSI colors:
 		# strip CRs and escape sequences, then drop `script` annotations.
-		CONSOLE_TAIL=$(tail -n 100 "$caplog" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)')
-		rm -f "$caplog"
+		CONSOLE_TAIL=$(tail -n 100 "$CAPLOG_FILE" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)')
+		rm -f "$CAPLOG_FILE"
+		CAPLOG_FILE=""
 	fi
 	return $exitcode
 }
@@ -150,8 +166,8 @@ debugcore() {
 
     # systemd-coredump: kernel.core_pattern is a pipe handler, so no core
     # file is written to disk. Try to export the latest matching dump via
-    # coredumpctl (needs journal access; usually root).
-    local systemd_tmp_core=""
+    # coredumpctl (needs journal access; usually root). systemd_tmp_core
+    # is a global, so the EXIT cleanup can remove leftovers.
     if [[ -z "$CORE_FILE" ]]; then
         local core_pattern
         core_pattern="$(cat /proc/sys/kernel/core_pattern 2>/dev/null)"
@@ -238,6 +254,7 @@ debugcore() {
 				# Exported systemd dump: not ours to keep - remove after analysis.
 				rm -f "$systemd_tmp_core"
 				rmdir "$(dirname "$systemd_tmp_core")" 2>/dev/null
+				systemd_tmp_core=""
 				echo ""
 				echo "Core dump was exported from systemd-coredump and removed after analysis."
 			else
