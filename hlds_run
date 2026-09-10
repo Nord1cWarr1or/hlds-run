@@ -205,11 +205,12 @@ debugcore() {
     fi
     if [[ -n "$CORE_FILE" ]]; then
         # Never analyze a dump left by an earlier run: only cores created
-        # after this server start are trustworthy.
+        # after this server start are trustworthy. Also: a real core is
+        # an ELF core file - anything else named core* is not ours.
         local core_mtime
         core_mtime=$(stat -c %Y "$CORE_FILE" 2>/dev/null || echo 0)
-        if [[ $core_mtime -lt $since_ts ]]; then
-            log_message "Warning: newest core* is older than this server run - ignoring it."
+        if [[ $core_mtime -lt $since_ts ]] || ! file "$CORE_FILE" 2>/dev/null | grep -qE 'ELF.*(core|coredump)'; then
+            log_message "Warning: newest core* is not a core dump from this server run - ignoring it."
             CORE_FILE=""
         fi
     fi
@@ -226,12 +227,23 @@ debugcore() {
             log_message "No local core file; core_pattern is a handler - trying 'coredumpctl dump'..."
             local since_args=()
             [[ $since_ts -gt 0 ]] && since_args=(--since "@$since_ts")
-            if coredumpctl dump "${HL##*/}" "${since_args[@]}" --output="$systemd_tmp_core" >/dev/null 2>&1 && [[ -s "$systemd_tmp_core" ]]; then
+            # systemd-coredump processes dumps asynchronously: the journal
+            # entry may not exist yet right after the crash - retry briefly.
+            local try ok=1
+            for try in 1 2 3 4 5; do
+                if coredumpctl dump "${HL##*/}" "${since_args[@]}" --output="$systemd_tmp_core" >/dev/null 2>&1 && [[ -s "$systemd_tmp_core" ]]; then
+                    ok=1
+                    break
+                fi
+                ok=0
+                [[ $try -lt 5 ]] && sleep 1
+            done
+            if [[ $ok -eq 1 ]]; then
                 CORE_FILE="$systemd_tmp_core"
             else
                 rm -rf "$(dirname "$systemd_tmp_core")"
                 systemd_tmp_core=""
-                log_message "Warning: coredumpctl dump failed (journal access denied or no matching dump)."
+                log_message "Warning: coredumpctl dump failed (journal access denied, no matching dump, or dump not processed yet)."
             fi
         fi
     fi
