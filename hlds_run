@@ -231,7 +231,8 @@ debugcore() {
 			echo "----------------------------------------------------------------------"
 			echo "--- GDB ANALYSIS of Core Dump: '$CORE_FILE' ---"
 			echo "----------------------------------------------------------------------"
-			cat > gdb_commands.txt <<-EOF
+			GDB_CMDS_FILE=$(mktemp)
+			cat > "$GDB_CMDS_FILE" <<-EOF
 			set pagination off
 			set confirm off
 			info threads
@@ -247,9 +248,9 @@ debugcore() {
 			EOF
 
 			# Stripped binaries pepper every frame with "No symbol table info" - drop the noise.
-			"$GDB" "$HL" "$CORE_FILE" -x gdb_commands.txt -batch 2>&1 | sed '/No symbol table info available/d'
+			"$GDB" "$HL" "$CORE_FILE" -x "$GDB_CMDS_FILE" -batch 2>&1 | sed '/No symbol table info available/d'
 
-			rm gdb_commands.txt
+			rm -f "$GDB_CMDS_FILE"; GDB_CMDS_FILE=""
 			if [[ -n "$systemd_tmp_core" ]]; then
 				# Exported systemd dump: not ours to keep - remove after analysis.
 				rm -f "$systemd_tmp_core"
