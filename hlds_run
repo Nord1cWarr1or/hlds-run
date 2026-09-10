@@ -150,7 +150,7 @@ init() {
 		fi
 		if [[ -z "$mdebug_lib" ]]; then
 			# Last resort: known multiarch locations of the 32-bit object.
-			for candidate in /usr/lib/i386-linux-gnu/libc_malloc_debug.so.0 /usr/lib32/libc_malloc_debug.so.0 /lib32/libc_malloc_debug.so.0; do
+			for candidate in /usr/lib/i386-linux-gnu/libc_malloc_debug.so.0 /usr/lib32/libc_malloc_debug.so.0 /lib32/libc_malloc_debug.so.0 /usr/lib/libc_malloc_debug.so.0; do
 				[[ -e "$candidate" ]] && { mdebug_lib="$candidate"; break; }
 			done
 		fi
@@ -186,7 +186,6 @@ log_message() {
 
 # Capture: run on a pty so the operator keeps the live console view while
 # a temp typescript collects stdout+stderr for the crash report tail.
-LAUNCHER_FILE=""
 
 make_launcher() {
 	# `script -c` re-parses its command line through $SHELL (dash, fish...),
@@ -309,7 +308,10 @@ debugcore() {
 
     log_message "CRASH DETECTED (Exit Code: $exitcode). Generating comprehensive crash report..."
 
+    # Pre-create owner-only BEFORE the >> block below: the file would
+    # otherwise spend its whole generation time at umask mode (audit H7).
     local CRASH_LOG_FILE="crash_report_$(date +'%Y-%m-%d_%H-%M-%S.%N').txt"
+    ( umask 077; : > "$CRASH_LOG_FILE" )
     log_message "Crash report will be saved to: $CRASH_LOG_FILE"
 
     local CORE_FILE
@@ -394,11 +396,11 @@ debugcore() {
 		echo "[*] Disk Space Usage:"; df -h; echo ""
 		echo "[*] Environment (engine-related):"; env | grep -E '^(LD_LIBRARY_PATH|LD_PRELOAD|MALLOC_CHECK_|MALLOC_PERTURB_|TERM|HOME)'; if [[ -n "$HEAP_PRELOAD" ]]; then echo "LD_PRELOAD=$HEAP_PRELOAD  (applied to the server process via launcher)"; fi; echo " (STEAM_*/PATH are withheld from the report on purpose)"; echo ""
 		echo "[*] Binary checksum ($HL):"; md5sum "$HL" 2>&1; echo ""
-		echo "[*] Library checksums (all .so in server root):"; find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
+		echo "[*] Library checksums (all .so in server root):"; local so_list; so_list=$(find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 -r md5sum 2>/dev/null); [[ -n "$so_list" ]] && echo "$so_list" || echo "(none found)"; echo ""
 		echo "[*] Game DLLs ($GAME/dlls):"; find "$GAME/dlls" -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 md5sum 2>/dev/null; echo ""
 		echo "[*] Core dump settings:"; echo "ulimit -c: $(ulimit -c)"; echo "kernel.core_pattern: $(cat /proc/sys/kernel/core_pattern 2>&1)"; echo ""
-		echo "[*] Listening sockets (TCP):"; if ss -ltnp >/dev/null 2>&1; then ss -ltnp | head -n 15; else echo "(unavailable: needs root for -p)"; ss -ltn | head -n 15; fi; echo ""
-		echo "[*] Listening sockets (UDP):"; if ss -ulnp >/dev/null 2>&1; then ss -ulnp | head -n 15; else echo "(unavailable: needs root for -p)"; ss -uln | head -n 15; fi; echo ""
+		echo "[*] Listening sockets (TCP):"; if ! command -v ss &>/dev/null; then echo "(ss is not installed)"; elif ss -ltnp >/dev/null 2>&1; then ss -ltnp | head -n 15; else echo "(process info unavailable: needs root for -p)"; ss -ltn | head -n 15; fi; echo ""
+		echo "[*] Listening sockets (UDP):"; if ! command -v ss &>/dev/null; then echo "(ss is not installed)"; elif ss -ulnp >/dev/null 2>&1; then ss -ulnp | head -n 15; else echo "(process info unavailable: needs root for -p)"; ss -uln | head -n 15; fi; echo ""
 		echo "[*] Kernel Messages (dmesg last 50, common noise filtered):"; if dmesg >/dev/null 2>&1; then dmesg | grep -viE 'UFW BLOCK|audit:' | tail -n 50; else echo "(unavailable without root)"; fi; echo ""
 
 		if [[ -n "$CONSOLE_TAIL" ]]; then
@@ -469,10 +471,6 @@ debugcore() {
 		echo "======================================================================"
 
 	} >> "$CRASH_LOG_FILE"
-
-	# Tighten the file's mode right after writing (umask alone is racy
-	# for the >>-created file when it did not exist yet).
-	chmod 600 "$CRASH_LOG_FILE"
 }
 
 run() {
