@@ -24,12 +24,15 @@
 #         cores untracked.
 #       - Crash-loop guard: gives up after repeated quick crashes
 #         (original restarts forever).
-#       - Debug mode: `ulimit -c unlimited` (original: 2000) and
-#         MALLOC_CHECK_=3 heap-corruption detection. CAVEAT: the debug
+#       - Debug mode: `ulimit -c unlimited` (original: 2000) + full
+#         crash reports; -debug alone never touches the heap. Heap
+#         debugging is opt-in: -malloc-check (MALLOC_CHECK_=3, with the
+#         libc_malloc_debug preload on glibc >= 2.34) and
+#         -malloc-perturb (MALLOC_PERTURB_=170). CAVEAT: the debug
 #         malloc changes the heap layout - layout-sensitive crashes can
-#         move or vanish entirely under -debug (verified live: crashes
-#         at SteamGameServer_Init stopped reproducing with the preload
-#         on glibc 2.41).
+#         move or vanish entirely under -malloc-check (verified live:
+#         crashes at SteamGameServer_Init stopped reproducing with the
+#         preload on glibc 2.41).
 #       - Exit signal is decoded into a name in the report.
 #       - Strict arg parsing: script-only args (-debug/-norestart/
 #         -timeout/-binary) are never leaked to the server; missing
@@ -65,6 +68,8 @@ trap cleanup_temp EXIT
 # --- Global Configuration ---
 GAME="valve"
 DEBUG=0
+MALLOC_CHECK_ON=0
+MALLOC_PERTURB_ON=0
 RESTART="yes"
 HL="./hlds_linux"
 TIMEOUT=10
@@ -96,6 +101,8 @@ init() {
 			[[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "Error: '-timeout' value must be a positive integer."; exit 1; }
 			TIMEOUT="$2"; shift 2 ;;
 		"-debug") DEBUG=1; shift ;;
+		"-malloc-check") MALLOC_CHECK_ON=1; shift ;;
+		"-malloc-perturb") MALLOC_PERTURB_ON=1; shift ;;
 		"-norestart") RESTART=""; shift ;;
 		*) SRV_ARGS+=("$1"); shift ;;
 		esac
@@ -133,13 +140,18 @@ init() {
 			echo "Warning: core dumps could not be enabled (hard limit is 0 - container or service limits?)."
 		fi
 		if ! command -v "$GDB" &> /dev/null; then echo "Warning: 'gdb' not found."; fi
-		# Loud heap-corruption detection for this debug session only.
-		#
-		# glibc >= 2.34 (Debian 12+, Arch, Ubuntu 22+): the debug malloc
-		# lives in libc_malloc_debug.so and is NOT active unless preloaded.
-		# On older glibc (Debian 11, CentOS) the variable works by itself.
-		# Detect the 32-bit object (the HLDS binary is 32-bit); on systems
-		# without it the plain MALLOC_CHECK_ export below still applies.
+	fi
+	# Loud heap-corruption detection - OPT-IN via -malloc-check. Deliberately
+	# NOT part of -debug: the debug malloc rearranges the heap, and -debug
+	# must stay pure observability (reports + core dumps) so it can be used
+	# to catch layout-sensitive crashes that heap changes would hide.
+	#
+	# glibc >= 2.34 (Debian 12+, Arch, Ubuntu 22+): the debug malloc
+	# lives in libc_malloc_debug.so and is NOT active unless preloaded.
+	# On older glibc (Debian 11, CentOS) the variable works by itself.
+	# Detect the 32-bit object (the HLDS binary is 32-bit); on systems
+	# without it the plain MALLOC_CHECK_ export below still applies.
+	if [[ "$MALLOC_CHECK_ON" -eq 1 ]]; then
 		local mdebug_lib ldconfig_bin candidate
 		mdebug_lib="$(ldconfig -p 2>/dev/null | awk '/libc_malloc_debug/ && /\(libc6\) =>/ {print $NF; exit}')"
 		if [[ -z "$mdebug_lib" ]]; then
@@ -164,22 +176,25 @@ init() {
 			# injected into the launcher/env so only the server process
 			# (32-bit) sees it.
 			HEAP_PRELOAD="$mdebug_lib"
-			echo "Heap debugging: $mdebug_lib will be preloaded into the server (glibc >= 2.34 requires it)."
+			echo "Heap debugging enabled (-malloc-check): $mdebug_lib will be preloaded into the server (glibc >= 2.34 requires it)."
 		else
 			HEAP_PRELOAD=""
-			echo "Heap debugging: MALLOC_CHECK_ set natively (no libc_malloc_debug found)."
+			echo "Heap debugging enabled (-malloc-check): MALLOC_CHECK_ set natively (no libc_malloc_debug found)."
 		fi
 		export MALLOC_CHECK_=3
 		# CAVEAT: even without the preload, on older glibc the native debug
 		# malloc also rearranges the heap - layout-sensitive crashes can
-		# move or vanish under -debug (see README, verified on Debian 13).
-		# OPTIONAL: fill fresh allocations with garbage (0xAA) and freed memory
-		# with ~0xAA so use-after-free and reads of freed/stale data trip almost
-		# immediately. Adds memset on every malloc/free - noticeable overhead.
-		# Works on every glibc, no preload needed. Note: with the preload the
-		# heap layout differs from non-debug runs - crashes may surface at
-		# different points. Uncomment for maximum-radar debugging sessions:
-		# export MALLOC_PERTURB_=170
+		# move or vanish under -malloc-check (see README, verified on
+		# Debian 13).
+	fi
+	if [[ "$MALLOC_PERTURB_ON" -eq 1 ]]; then
+		# Fill fresh allocations with garbage (0xAA) and freed memory with
+		# ~0xAA so use-after-free and reads of freed/stale data trip almost
+		# immediately. Adds memset on every malloc/free - noticeable
+		# overhead. Works on every glibc, no preload needed. Combine with
+		# -malloc-check (and -debug) for the maximum-radar session.
+		export MALLOC_PERTURB_=170
+		echo "Heap debugging enabled (-malloc-perturb): MALLOC_PERTURB_=170 (allocations filled with 0xAA - extra overhead on every malloc/free)."
 	fi
 	# The operator's LD_PRELOAD is never dropped: it is handed to the server
 	# (launcher export or env prefix) together with the wrapper's heap-debug
