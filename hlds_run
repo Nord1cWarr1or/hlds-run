@@ -213,6 +213,19 @@ log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] - $1"
 }
 
+# Timestamp for artifact names: <format>.<milliseconds>. %N prints 9
+# digits of nanoseconds - keep the first 3 (milliseconds): still
+# collision-proof for two artifacts in one second, 6 characters
+# shorter. Truncate only a real %N tail (dot + exactly 9 digits): if
+# %N is unsupported, the name just stays longer instead of getting
+# mangled.
+now_stamp() {
+	local ts
+	ts="$(date +"$1.%N")"
+	[[ $ts =~ \.[0-9]{9}$ ]] && ts="${ts%??????}"
+	printf '%s' "$ts"
+}
+
 # Capture: run on a pty so the operator keeps the live console view while
 # a temp typescript collects stdout+stderr for the crash report tail.
 
@@ -324,7 +337,7 @@ debugcore() {
 	if [[ $exitcode -eq 130 || $exitcode -eq 143 ]]; then
 		if [[ -n "$CONSOLE_TAIL" ]]; then
 			local stop_log
-			stop_log="server_stop_$(date +'%Y-%m-%d_%H-%M-%S.%N').log"
+			stop_log="server_stop_$(now_stamp '%Y-%m-%d_%H-%M-%S').log"
 			printf '%s\n' "Server stopped with exit code $exitcode ($(date)). Last console lines:" "$CONSOLE_TAIL" > "$stop_log"
 			chmod 600 "$stop_log"
 			# A stop-log is written on every clean stop, so rotate them like
@@ -345,7 +358,7 @@ debugcore() {
     # Pre-create owner-only BEFORE the >> block below: the file would
     # otherwise spend its whole generation time at umask mode (audit H7).
     local CRASH_LOG_FILE
-    CRASH_LOG_FILE="crash_report_$(date +'%Y-%m-%d_%H-%M-%S.%N').txt"
+    CRASH_LOG_FILE="crash_report_$(now_stamp '%Y-%m-%d_%H-%M-%S').txt"
     ( umask 077; : > "$CRASH_LOG_FILE" )
     log_message "Crash report will be saved to: $CRASH_LOG_FILE"
 
@@ -493,7 +506,7 @@ debugcore() {
 				echo "Core dump was exported from systemd-coredump and removed after analysis."
 			else
 				local new_core_name
-				new_core_name="crash_core.$(date +%F_%T.%N).dmp"
+				new_core_name="crash_core.$(now_stamp +%F_%T).dmp"
 				if mv "$CORE_FILE" "$new_core_name" 2>/dev/null; then
 					local -a old_dumps=()
 					while IFS= read -r f; do old_dumps+=("$f"); done < <(find . -maxdepth 1 -name 'crash_core.*.dmp' -printf '%T@ %p\n' | sort -rn | tail -n +4 | cut -d' ' -f2-)
