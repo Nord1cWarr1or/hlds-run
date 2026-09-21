@@ -1,224 +1,148 @@
 # hlds-run
 
-Краш-диагностическая обёртка для dedicated-сервера Half-Life (`hlds_linux`).
-Drop-in замена оригинального `hlds_run` от Valve (сборки 10211 и новее).
-Запускает сервер; при краше (в режиме `-debug`) пишет полный отчёт:
-состояние системы, хвост консоли сервера, GDB-анализ core-дампа.
+**English** | **[Русский](https://github.com/Nord1cWarr1or/hlds-run/blob/main/README.ru.md)**
 
-## Запуск
+hlds-run is a bash crash-diagnostics wrapper for the Half-Life dedicated server (`hlds_linux`). It runs the server on a pty, mirrors its console to the operator and a capture file, restarts it after crashes under a crash-loop guard, and on every crash writes a full report: system state, the last 100 console lines and a GDB analysis of the core dump. It is a drop-in replacement for the original Valve `hlds_run` (build 10211 and newer).
+
+## Requirements
+
+- Linux, bash 4+
+- `util-linux` `script` ≥ 2.32 — for console capture; without it the wrapper falls back to a plain tty with a warning (`--output-limit` is applied when the installed `script` supports it)
+- `gdb` — only for the GDB section of crash reports
+- `coredumpctl` — only if `kernel.core_pattern` is a pipe handler (systemd-coredump)
+- `file` — to verify a core dump is a real ELF core; if missing, only the mtime check runs and the report says so
+
+Verified on Debian 11 (glibc 2.31), Debian 13 (glibc 2.44) and Arch Linux, on real servers.
+
+## Installation
+
+Copy the script into the server root — the directory holding `hlds_linux` — and make it executable:
+
+```bash
+cp hlds_run /path/to/serverfiles/ && chmod +x /path/to/serverfiles/hlds_run
+```
+
+No other files are needed; helpers are created at runtime and deleted after use.
+
+## Quick start
 
 ```bash
 ./hlds_run -game cstrike -debug +map de_dust2
 ```
 
-Скрипт запускается из корня сервера — из каталога, где лежит `hlds_linux`.
-
-Сессия «максимальный радар» — отчёты, дампы, проверка кучи и заливка
-памяти одновременно:
+The wrapper starts from the server root. A "maximum radar" session — reports, dumps, heap checking and memory fill at once:
 
 ```bash
 ./hlds_run -game cstrike -debug -malloc-check -malloc-perturb +map de_dust2
 ```
 
-## Аргументы
+## Usage
 
-Скриптовые аргументы (серверу не передаются):
+Script-owned arguments (never passed to the server):
 
-| Аргумент         | Действие                                            | По умолчанию    |
-|------------------|-----------------------------------------------------|-----------------|
-| `-debug`         | Core-дампы + полный отчёт на каждый краш; кучу не трогает | выключено  |
-| `-malloc-check`  | Heap-проверка glibc: `MALLOC_CHECK_=3` + preload `libc_malloc_debug` (см. «Heap-отладка») | выключено |
-| `-malloc-perturb`| Заливка аллокаций: `MALLOC_PERTURB_=170` (см. «Heap-отладка») | выключено |
-| `-norestart`     | Без рестарт-цикла; код выхода сервера пробрасывается | рестарт включён |
-| `-timeout N`     | Задержка между рестартами, секунд (целое ≥ 1)         | 10              |
-| `-binary <path>` | Другой бинарник сервера                              | `./hlds_linux`  |
-| `-game <game>`   | Тип игры; проверяется существование каталога         | `valve`         |
+| Argument | Action | Default |
+|----------|--------|---------|
+| `-debug` | Core dumps + a full report on every crash; never touches the heap | off |
+| `-malloc-check` | glibc heap checking: `MALLOC_CHECK_=3` + `libc_malloc_debug` preload (see Heap debugging) | off |
+| `-malloc-perturb` | Allocation fill: `MALLOC_PERTURB_=170` (see Heap debugging) | off |
+| `-norestart` | No restart loop; the server exit code is propagated | restart on |
+| `-timeout N` | Delay between restarts, seconds (integer ≥ 1) | 10 |
+| `-binary <path>` | Another server binary | `./hlds_linux` |
+| `-game <game>` | Game type; the directory is checked for existence | `valve` |
 
-Все остальные аргументы передаются серверу без изменений — как у Valve `hlds_run`.
+Everything else is passed to the server unchanged — same as Valve `hlds_run`.
 
-## Рестарт-цикл
+## Configuration
 
-При краше сервер перезапускается с задержкой `-timeout` секунд. Есть
-защита от бесконечного цикла падений (crash-loop): если сервер падает
-подряд `STREAK_LIMIT` раз, каждый раз не проработав `HEALTHY_UPTIME`
-секунд с момента старта, обёртка останавливается с сообщением
-«Crash-loop detected». Единичный краш после долгого аптайма
-сбрасывает счётчик — один сбой циклом не считается. Чистый выход
-(код 0, Ctrl+C/SIGINT, SIGTERM) завершает цикл без отчёта — для SIGTERM
-тоже: это штатная остановка (systemd stop), отчёт о ней не пишется и
-crash-loop не засчитывается. При остановке оператором (130/143)
-последние ~100 строк консоли сохраняются в `server_stop_<дата>.log`
-(права 600) рядом с отчётами — в любом режиме, в том числе без `-debug`;
-как и дампы, stop-логи ротируются: остаются 3 самых свежих.
+Tunables live at the top of the script:
 
-| Константа        | Смысл                                                            | По умолчанию |
-|------------------|-------------------------------------------------------------------|--------------|
-| `STREAK_LIMIT`   | Максимум быстрых крашей подряд перед остановкой                 | 5            |
-| `HEALTHY_UPTIME` | Аптайм, после которого краш не считается частью цикла, секунд  | 300          |
+| Constant | Meaning | Default |
+|----------|---------|---------|
+| `TIMEOUT` | Restart delay when `-timeout` is not given | `10` |
+| `STREAK_LIMIT` | Quick crashes in a row before the wrapper gives up | `5` |
+| `HEALTHY_UPTIME` | Uptime that resets the crash streak, seconds | `300` |
+| `GDB` | GDB binary used for report analysis | `gdb` |
+| `GAME` / `HL` | Fallbacks for `-game` / `-binary` | `valve` / `./hlds_linux` |
 
-## Crash-отчёт
+## Restart loop
 
-Пишется в `crash_report_<дата>.txt` (в имени — дата до миллисекунд, чтобы
-два краша в одну миллисекунду не перезаписали друг друга) в корне сервера. Состав:
+After a crash the server restarts with a `-timeout` delay. The crash-loop guard stops the wrapper after `STREAK_LIMIT` crashes in a row where each run lived shorter than `HEALTHY_UPTIME` seconds ("Crash-loop detected"). A single crash after long uptime resets the streak. A clean exit (code 0, Ctrl+C/SIGINT, SIGTERM — a normal systemd stop) ends the loop without a report. On an operator stop (130/143) the last ~100 console lines are saved to `server_stop_<date>.log` (mode 600) next to the reports — in any mode, including without `-debug`; stop logs rotate, 3 newest kept.
 
-- код выхода, имя сигнала (`128+N` → SIGSEGV/SIGABRT/…), полная строка запуска
-- состояние системы: ядро, load average, память, swap, диски, топ процессов
-  по CPU и по RSS, TCP/UDP-сокеты, последние 50 строк `dmesg` (без шума;
-  недоступные без root секции честно помечаются)
-- переменные окружения движка — по явному списку (`LD_LIBRARY_PATH`,
-  `LD_PRELOAD`, `MALLOC_CHECK_`, `MALLOC_PERTURB_`, `TERM`, `HOME`);
-  `STEAM_*` и `PATH` в отчёт не попадают. Файл отчёта создаётся
-  с правами `600` (права выставляются **до** записи, не после)
-- md5-суммы: серверного бинарника, всех `.so` из корня сервера и из
-  `<game>/dlls` — позволяет заметить подмену бинарников или модов
-- настройки core-дампа: `ulimit -c`, `kernel.core_pattern`
-- последние 100 строк stdout+stderr сервера. Из хвоста удалены
-  `\r`, добавленные pty, ANSI-коды цвета и аннотации сессии `script`
-- GDB-анализ core-дампа (один прогон, `-nx` — без пользовательского
-  `~/.gdbinit`), разбитый на подписанные подсекции —
-  `Stacktrace` (`thread apply all bt full`), `Registers and frame info`,
-  `Disassembly` (32 инструкции перед `$pc`), `Memory mappings`,
-  `Shared libraries`. Повторяющийся шум `No symbol table info available`
-  от стрипнутых бинарников отфильтрован
+## Crash report
 
-## Core-дампы
+Written per crash to `crash_report_<date>.txt` in the server root (the name carries milliseconds, so two crashes in one millisecond never overwrite each other). Contents:
 
-Без `-debug` core-дампы и отчёты не создаются: поведение сервера не
-изменяется, heap-layout остаётся нетронутым. То же верно и под `-debug`:
-наблюдаемость кучу не трогает — раскладку меняют только явные
-`-malloc-check`/`-malloc-perturb` (см. «Heap-отладка»). Захват консоли
-при этом работает как обычно.
+- exit code, signal name (`128+N` → SIGSEGV/SIGABRT/…), full start line
+- system state: kernel, load average, memory, swap, disks, top processes by CPU and RSS, TCP/UDP sockets, last 50 `dmesg` lines (noise filtered; root-only sections are honestly marked)
+- engine environment by an explicit allowlist (`LD_LIBRARY_PATH`, `LD_PRELOAD`, `MALLOC_CHECK_`, `MALLOC_PERTURB_`, `TERM`, `HOME`); `STEAM_*` and `PATH` never reach the report. The file is created with mode 600 — permissions are set before writing, not after
+- md5 sums: the server binary, every `.so` in the server root and in `<game>/dlls` — flags binary or mod tampering
+- core dump settings: `ulimit -c`, `kernel.core_pattern`
+- the last 100 lines of the server stdout+stderr, cleaned of pty `\r`, ANSI colors and `script` annotations
+- GDB analysis of the core in a single batch (`-nx`, no user `~/.gdbinit`), split into labeled sections — `Stacktrace` (`thread apply all bt full`), `Registers and frame info`, `Disassembly` (32 instructions before `$pc`), `Memory mappings`, `Shared libraries`. Known gdb noise is filtered out (`No symbol table info available`, xstate warnings, deleted-`/dev/shm` mapping warnings, the `[New LWP]` roll call, unused `k0-k7` register lines); stripped `?? ()` frames stay — they are the backtrace
 
-С `-debug`:
+## Core dumps
 
-- `ulimit -c unlimited` (с предупреждением, если лимит не поднялся —
-  контейнер/сервисные ограничения)
-- core-файл после анализа переименовывается в `crash_core.<дата>.dmp`,
-  старые дампы ротируются — остаются 3 самых свежих
-- если `kernel.core_pattern` — pipe-handler (настроен systemd-coredump, и
-  файла на диске нет), свежие дампы экспортируются командой
-  `coredumpctl dump hlds_linux` (до 5 попыток с паузой — systemd
-  обрабатывает дампы асинхронно), а после анализа удаляются
-  (systemd хранит свою копию)
-- в анализ попадают только дампы, созданные **после старта этого запуска
-  сервера** и являющиеся настоящими ELF-core-файлами: файл `core*` от
-  более раннего краша или случайный `core_*.txt` игнорируются
-  с предупреждением в логе (то же ограничение по времени действует и для
-  `coredumpctl dump`)
+Without `-debug` no core dumps or reports are created; behavior stays untouched, heap layout included. The same holds under `-debug`: observability never touches the heap — only the explicit `-malloc-check` / `-malloc-perturb` change it.
 
-## Heap-отладка (opt-in)
+With `-debug`:
 
-Флаги `-malloc-check` и `-malloc-perturb` включают отладочный malloc
-glibc. `-debug` кучу не трогает: отчёты и дампы можно снимать, не меняя
-поведение сервера. Оба флага добавляют накладные расходы и меняют
-раскладку кучи — включайте их на сессию диагностики, не на постоянку.
+- `ulimit -c unlimited` (with a warning if the limit did not rise — container or service limits)
+- after analysis the core is renamed to `crash_core.<date>.dmp`; dumps rotate, 3 newest kept
+- if `kernel.core_pattern` is a pipe handler (systemd-coredump configured, no file on disk), fresh dumps are exported via `coredumpctl dump hlds_linux` (up to 5 attempts with a pause — systemd processes dumps asynchronously) and removed after analysis
+- only dumps created after this server start and passing the ELF-core check (`file`) are analyzed; a `core*` left by an earlier crash or a random `core_*.txt` is ignored with a warning (the same time bound applies to `coredumpctl`)
 
-- `-malloc-check` — `MALLOC_CHECK_=3`, жёсткая проверка кучи glibc:
-  порча heap приводит к громкому `abort` вместо тихих последствий.
-  На glibc ≥ 2.34 (Debian 12+, Arch, Ubuntu 22+) проверка работает
-  только при предзагрузке `libc_malloc_debug.so` — скрипт сам находит
-  её через `ldconfig` (32-битную, под бинарник) и передаёт `LD_PRELOAD`
-  **только серверному процессу** (через launcher/`env`; хелперы самой
-  обёртки preload не видят — нет шума «wrong ELF class» от 64-битных
-  утилит); на старых glibc (Debian 11, CentOS) переменная действует
-  без preload. **Важно:** отладочный malloc меняет раскладку кучи —
-  layout-чувствительная порча срабатывает в других местах, а в худшем
-  случае краш исчезает совсем (проверено на Debian 13: краши в
-  `SteamGameServer_Init` пропадали под preload). Если краш
-  воспроизводится без `-malloc-check`, но не с ним — это
-  layout-зависимость, и это само по себе зацепка
-- `-malloc-perturb` — `MALLOC_PERTURB_=170`: glibc заполняет новые
-  аллокации байтом 0xAA, а освобождённые — байтом `~0xAA` (0x55).
-  Заставляет use-after-free срабатывать почти сразу; добавляет ощутимые
-  накладные расходы на каждый malloc/free. Работает на всех версиях
-  glibc, preload не требует
+## Heap debugging (opt-in)
 
-**Свой `LD_PRELOAD` оператора** (например, из systemd-юнита) не
-вырезается в любом режиме: он снимается с окружения обёртки (чтобы
-64-битные хелперы не шумели), но передаётся серверу — вместе с
-heap-debug библиотекой, если включён `-malloc-check`; в лог пишется
-`Operator LD_PRELOAD passed to the server: …`. Если его значение
-совпадает с найденной heap-debug библиотекой — дубль не создаётся.
+The `-malloc-check` and `-malloc-perturb` flags enable glibc's debug malloc. `-debug` never touches the heap: reports and dumps can be taken without changing server behavior. Both flags add overhead and rearrange the heap — enable them for a diagnostics session, not permanently.
 
-## Захват консоли
+- `-malloc-check` — `MALLOC_CHECK_=3`, strict glibc heap checking: heap corruption produces a loud `abort` instead of quiet fallout. On glibc ≥ 2.34 (Debian 12+, Arch, Ubuntu 22+) it works only with `libc_malloc_debug.so` preloaded — the wrapper finds it via `ldconfig` (the 32-bit one, for the server binary) and passes it as `LD_PRELOAD` to the server process only (through a launcher/`env`; wrapper helpers never see the preload — no `wrong ELF class` noise from 64-bit tools); on older glibc (Debian 11, CentOS) the variable works without a preload. **The debug malloc rearranges the heap:** layout-sensitive corruption fires elsewhere and, in the worst case, disappears entirely (verified on Debian 13: `SteamGameServer_Init` crashes vanished under the preload). A crash that reproduces without `-malloc-check` but not with it is layout-dependent — that alone is a lead
+- `-malloc-perturb` — `MALLOC_PERTURB_=170`: fresh allocations are filled with 0xAA, freed memory with ~0xAA (0x55). Makes use-after-free fire almost immediately; adds noticeable overhead to every malloc/free. Works on every glibc, no preload needed
 
-По умолчанию сервер запускается на pty через `script`: живой вывод идёт
-в терминал оператора, а копия пишется в скрытый typescript-файл в
-каталоге сервера (на реальной файловой системе, не в tmpfs; лимит
-200 МБ через `--output-limit` страхует от спамящего консоль; при
-достижении лимита `script` прекращает запись — отчёт помечает хвост
-предупреждением «may be stale», т.к. он заморожен на момент обрезки,
-а не на момент краша), откуда
-отчёт берёт последние 100 строк обоих потоков. Сама команда сервера
-передаётся `script` через временный launcher-файл с `#!/bin/bash` —
-аргументы гарантированно разбирает bash, а не шелл из `$SHELL` (dash,
-fish и др. искажали бы кавычки и кириллицу). `script -e` сохраняет
-код выхода сервера. При отсутствии `script` — fallback в обычный tty
-с предупреждением. Пользовательских опций захвата нет — решение осознанное.
+The operator's own `LD_PRELOAD` (e.g. from a systemd unit) is never dropped, in any mode: it is removed from the wrapper's shell scope (so 64-bit helpers stay quiet) and passed to the server — together with the heap-debug library when `-malloc-check` is on; `Operator LD_PRELOAD passed to the server: …` is logged. If its value equals the found heap-debug library, no duplicate is created.
 
-Перед запуском обёртка проверяет запись в оба места, нужные для захвата:
-`TMPDIR` (там живёт launcher) и каталог сервера (там пишется typescript).
-Недоступный каталог сервера лишь отключает захват с предупреждением — сервер
-работает как обычно; недоступный `TMPDIR` — ошибка на старте, потому что
-launcher тогда пуст и сервер не запустится вовсе. В plain-tty режиме (нет
-`script`) проверки не выполняются: `TMPDIR` там не нужен.
+## Console capture
 
-## Преимущества перед оригиналом
+By default the server runs on a pty via `script`: live output goes to the operator's terminal, a copy lands in a hidden typescript in the server directory (on the real filesystem, not tmpfs; the 200 MiB `--output-limit` guards against a spamming console; when the limit is hit, `script` stops writing and the report marks the tail as possibly stale — it is frozen at truncation time, not crash time), from where the report takes the last 100 lines of both streams. The server command is handed to `script` through a temporary launcher file with a `#!/bin/bash` shebang — arguments are always parsed by bash, not by `$SHELL` (dash, fish and others would mangle quoting and Cyrillic). `script -e` preserves the server exit code. Without `script` — plain-tty fallback with a warning. There are no user-facing capture options — deliberate.
 
-- **Полноценные crash-отчёты** вместо трёх команд (`bt`, `info locals`,
-  `frame`) в общий `debug.log`: сигнал и exit code, состояние системы
-  (память, swap, диски, load, dmesg), окружение движка, md5-суммы
-  бинарника и всех `.so`, настройки core-дампа, хвост консоли сервера,
-  полный GDB-разбор (`thread apply all bt full`, регистры,
-  дизассемблирование вокруг `$pc`, mappings, shared libraries)
-- **Один отчёт на каждый краш** (`crash_report_<дата>.txt`) — оригинал
-  дописывает всё в один растущий `debug.log`
-- **Захват консоли через pty**: оператор видит консоль живьём, отчёт
-  получает последние 100 строк stdout+stderr (с чисткой `\r` и
-  ANSI-кодов) — в оригинале консоль вообще не захватывается
-- **systemd-coredump**: при `core_pattern` — pipe-handler дамп
-  экспортируется через `coredumpctl`; оригинал рассчитан только на
-  файл-ядра на диске
-- **Управление core-дампами**: переименование после анализа и ротация
-  (3 свежих) — оригинал за дампами не следит вовсе
-- **Защита от crash-loop**: остановка после серии быстрых падений; в
-  оригинале рестарт бесконечен
-- **Opt-in диагностика кучи**: `-debug` поднимает `ulimit -c unlimited`
-  (в оригинале — 2000 блоков), не трогая кучу; флаги `-malloc-check`/
-  `-malloc-perturb` включают heap-проверку отдельно — наблюдаемость
-  не смешана с модификацией поведения, heap-порча даёт громкий abort
-  только когда оператор этого просил
-- **Расшифровка сигнала** в отчёте (exit 139 → SIGSEGV и т.д.)
-- **Строгий разбор аргументов**: скриптовые флаги никогда не утекают
-  серверу; флаг без значения или нечисловой `-timeout` — ошибка, а не
-  тихое искажение командной строки, как в оригинале
-- **Честный код выхода сервера** (через `script -e`); у части старых
-  обёрток всегда выход 0
+Before launch the wrapper probes both places capture needs: `TMPDIR` (the launcher lives there) and the server directory (the typescript lands there). An unwritable server directory only disables capture with a warning — the server runs as usual; an unwritable `TMPDIR` is a hard start error, because the launcher would be empty and the server would never start. In plain-tty mode the probes are skipped: no `TMPDIR` is needed there.
 
-## Отличия от Valve hlds_run (10211)
+## Files and artifacts
 
-Ядро — разбор аргументов, запуск, рестарт-цикл — совместимы. Не
-перенесено (устаревшая обвязка Valve):
+| File | Created | Lifetime |
+|------|---------|----------|
+| `.caplog.XXXXXX` | every server run | deleted right after the console tail is taken (EXIT-trap fallback) |
+| `crash_report_<date>.txt` | every crash | kept, no rotation — by design |
+| `crash_core.<date>.dmp` | every analyzed crash | rotated, 3 newest kept |
+| `server_stop_<date>.log` | clean operator stop (130/143) | rotated, 3 newest kept |
 
-- `-pidfile`, `-gdb`, `-debuglog`; `-debuglog` заменён отдельными
-  файлами `crash_report_*.txt` (по одному на каждый краш)
-- `-autoupdate`, `-steamerr`, `-beta` и переменная `$FORCE` (автообновление
-  через steamcmd) — нет; обновляйте сервер отдельно, средствами SteamCMD
-  или LinuxGSM
-- `-ignoresigint`, `-notrap` — в самой сборке 10211 мертвы
-  (обработчик trap закомментирован), не переносились
-- `-help` отсутствует; вместо него — этот README
+Reads: the server binary and libraries (md5 sums), `/proc`, core dumps. `STEAM_*` and `PATH` values are never written anywhere.
 
-В оригинале диагностика крашей сводится к команде `bt`, записываемой
-в общий `debug.log`; здесь — полноценный отчёт с системным состоянием
-на каждый краш.
+## Improvements over the original
 
-## Требования
+- **Full crash reports** instead of three commands (`bt`, `info locals`, `frame`) appended to one `debug.log`: signal and exit code, system state (memory, swap, disks, load, dmesg), engine environment, md5 sums of the binary and all `.so`, core dump settings, console tail, full GDB analysis (`thread apply all bt full`, registers, disassembly around `$pc`, mappings, shared libraries)
+- **One report per crash** (`crash_report_<date>.txt`) — the original appends everything into a single growing `debug.log`
+- **Console capture over a pty**: the operator sees the console live and the report gets the last 100 lines of stdout+stderr (cleaned of `\r` and ANSI codes) — the original captures no console at all
+- **systemd-coredump**: when `core_pattern` is a pipe handler, the dump is exported via `coredumpctl`; the original only knows on-disk cores
+- **Core dump management**: rename after analysis and rotation (3 newest) — the original never tracks dumps
+- **Crash-loop guard**: stops after a streak of fast crashes; the original restarts forever
+- **Opt-in heap diagnostics**: `-debug` raises `ulimit -c unlimited` (the original: 2000 blocks) without touching the heap; `-malloc-check`/`-malloc-perturb` enable heap checking separately — observability is not mixed with behavior changes, and heap corruption gives a loud abort only when the operator asked for it
+- **Signal decoding** in the report (exit 139 → SIGSEGV and so on)
+- **Strict argument parsing**: script-owned flags never leak to the server; a missing value or a non-numeric `-timeout` is an error, not a silently mangled command line as in the original
+- **Honest server exit code** (via `script -e`); some old wrappers always exit 0
 
-- Linux, bash 4+
-- util-linux `script` ≥ 2.32 — для захвата консоли; без него — fallback
-  в обычный tty (флаг `--output-limit` применяется при наличии, иначе
-  пропускается)
-- `gdb` — только для `-debug`
-- `coredumpctl` (пакет systemd) — только если `core_pattern` — pipe-handler
-- `file` — для проверки типа core-дампа (присутствует в базовых системах)
+## Differences from the original Valve hlds_run (10211)
+
+The core — argument parsing, launch, restart loop — is compatible. Not carried over (obsolete Valve plumbing):
+
+- `-pidfile`, `-gdb`, `-debuglog`; `-debuglog` is replaced by per-crash `crash_report_*.txt` files
+- `-autoupdate`, `-steamerr`, `-beta` and the `$FORCE` variable (steamcmd auto-update) — update the server separately, with SteamCMD or LinuxGSM
+- `-ignoresigint`, `-notrap` — already dead in build 10211 itself (the trap handler is commented out); not ported
+- `-help` is absent; this README stands in its place
+
+In the original, crash diagnostics amount to a `bt` command written into a shared `debug.log`; here it is a full system-state report per crash.
+
+## License
+
+Distributed under the GNU General Public License, version 3. See `LICENSE` for details.
+
+hlds-run is an independent rewrite of the Valve `hlds_run` launcher: it contains no Valve code and is not affiliated with or endorsed by Valve. Half-Life and Valve are trademarks of Valve Corporation.

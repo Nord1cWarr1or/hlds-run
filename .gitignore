@@ -11,3 +11,7 @@ typescript
 
 # unrelated files that must not ride along
 mitm_mcp_traffic.db
+
+# internal readme-canon working files
+docs/
+AGENTS.md
