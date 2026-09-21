@@ -493,8 +493,20 @@ debugcore() {
 			quit
 			EOF
 
-			# Stripped binaries pepper every frame with "No symbol table info" - drop the noise.
-			"$GDB" -nx "$HL" "$CORE_FILE" -x "$GDB_CMDS_FILE" -batch 2>&1 | sed '/No symbol table info available/d'
+			# Pure gdb noise, dropped: "No symbol table info" from stripped
+			# binaries; xstate warnings (old kernels save a short register
+			# note - harmless format mismatch); "deleted /dev/shm" mapping
+			# warnings (Steam's temp shared memory is unlinked by design);
+			# the [New LWP] roll call (duplicated by info threads below);
+			# k0-k7 AVX-512 mask registers a 32-bit server never uses.
+			# KEEP the '?? ()' stack frames - stripped or anonymous, they
+			# ARE the backtrace.
+			"$GDB" -nx "$HL" "$CORE_FILE" -x "$GDB_CMDS_FILE" -batch 2>&1 | \
+				sed -e '/No symbol table info available/d' \
+					-e '/in core file too small\./d' \
+					-e '/during file-backed mapping note processing/d' \
+					-e '/^\[New LWP [0-9][0-9]*\]$/d' \
+					-e '/^k[0-7][[:space:]][[:space:]]*<unavailable>$/d'
 
 			rm -f "$GDB_CMDS_FILE"; GDB_CMDS_FILE=""
 			if [[ -n "$systemd_tmp_core" ]]; then
