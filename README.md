@@ -143,6 +143,10 @@ The core — argument parsing, launch, restart loop — is compatible. Not carri
 
 In the original, crash diagnostics amount to a `bt` command written into a shared `debug.log`; here it is a full system-state report per crash.
 
+## Credits
+
+The Build-ID registry (eu-stack), the stack memory view and the gdb pretty-printing ideas were adopted from [hun1er](https://github.com/hun1er)'s hlds_run variant.
+
 ## License
 
 Distributed under the GNU General Public License, version 3. See `LICENSE` for details.

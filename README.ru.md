@@ -143,6 +143,10 @@ cp hlds_run /path/to/serverfiles/ && chmod +x /path/to/serverfiles/hlds_run
 
 В оригинале диагностика крашей сводится к команде `bt`, записываемой в общий `debug.log`; здесь — полноценный отчёт с состоянием системы на каждый краш.
 
+## Благодарности
+
+Идеи реестра Build-ID (eu-stack), просмотра памяти стека и pretty-printing gdb переняты из варианта hlds_run автора [hun1er](https://github.com/hun1er).
+
 ## Лицензия
 
 Распространяется под GNU General Public License версии 3. Подробности — в файле `LICENSE`.
