@@ -469,6 +469,26 @@ debugcore() {
 			echo "--- GDB ANALYSIS of Core Dump: '$CORE_FILE' ---"
 			echo "----------------------------------------------------------------------"
 			if [[ -n "$core_note" ]]; then echo "$core_note"; echo ""; fi
+			# Build-ID registry via elfutils: the one identification that
+			# survives stripping - the sha1 stamped in every module needs
+			# no symbol table. Optional: silently skipped when eu-stack is
+			# missing, and on failure the report says so honestly instead
+			# of printing raw error noise.
+			if command -v eu-stack >/dev/null 2>&1; then
+				local eu_out eu_rc
+				eu_out="$(eu-stack --core="$CORE_FILE" --executable="$HL" -l 2>&1)"
+				eu_rc=$?
+				if [[ -n "$eu_out" && $eu_rc -le 1 ]]; then
+					echo "--- ELFUTILS BUILD-ID REGISTRY (eu-stack) ---"
+					echo ""
+					echo "$eu_out"
+					echo ""
+				else
+					echo "--- ELFUTILS BUILD-ID REGISTRY (eu-stack): skipped (rc=$eu_rc, elfutils too old or dump unreadable) ---"
+					[[ -n "$eu_out" ]] && sed -n '1,3p' <<< "$eu_out"
+					echo ""
+				fi
+			fi
 			# One batch invocation (the core is loaded once) with section
 			# headers printed by gdb itself via echo - the report stays
 			# split into labeled, greppable sections.
@@ -476,6 +496,10 @@ debugcore() {
 			cat > "$GDB_CMDS_FILE" <<-'EOF'
 			set pagination off
 			set confirm off
+			set print pretty on
+			set print frame-arguments all
+			set print array on
+			set print null-stop on
 			echo \n=== Stacktrace ===\n\n
 			info threads
 			thread apply all bt full
@@ -484,6 +508,8 @@ debugcore() {
 			info frame
 			info args
 			info locals
+			echo \n=== Stack memory at $sp (16 words) ===\n\n
+			x/16wx $sp
 			echo \n=== Disassembly (32 instructions before $pc) ===\n\n
 			x/32i $pc-32
 			echo \n=== Memory mappings ===\n\n

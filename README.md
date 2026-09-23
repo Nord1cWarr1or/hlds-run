@@ -11,6 +11,7 @@ hlds-run is a bash crash-diagnostics wrapper for the Half-Life dedicated server 
 - `gdb` — only for the GDB section of crash reports
 - `coredumpctl` — only if `kernel.core_pattern` is a pipe handler (systemd-coredump)
 - `file` — to verify a core dump is a real ELF core; if missing, only the mtime check runs and the report says so
+- `elfutils` (`eu-stack`) — optional: adds the Build-ID module registry to crash reports; without it that section is skipped
 
 Verified on Debian 11 (glibc 2.31), Debian 13 (glibc 2.44) and Arch Linux, on real servers.
 
@@ -78,7 +79,8 @@ Written per crash to `crash_report_<date>.txt` in the server root (the name carr
 - md5 sums: the server binary, every `.so` in the server root and in `<game>/dlls` — flags binary or mod tampering
 - core dump settings: `ulimit -c`, `kernel.core_pattern`
 - the last 100 lines of the server stdout+stderr, cleaned of pty `\r`, ANSI colors and `script` annotations
-- GDB analysis of the core in a single batch (`-nx`, no user `~/.gdbinit`), split into labeled sections — `Stacktrace` (`thread apply all bt full`), `Registers and frame info`, `Disassembly` (32 instructions before `$pc`), `Memory mappings`, `Shared libraries`. Known gdb noise is filtered out (`No symbol table info available`, xstate warnings, deleted-`/dev/shm` mapping warnings, the `[New LWP]` roll call, unused `k0-k7` register lines); stripped `?? ()` frames stay — they are the backtrace
+- GDB analysis of the core in a single batch (`-nx`, no user `~/.gdbinit`), C++ values pretty-printed, split into labeled sections — `Stacktrace` (`thread apply all bt full`), `Registers and frame info`, `Stack memory at $sp` (16 words around the stack pointer), `Disassembly` (32 instructions before `$pc`), `Memory mappings`, `Shared libraries`. Known gdb noise is filtered out (`No symbol table info available`, xstate warnings, deleted-`/dev/shm` mapping warnings, the `[New LWP]` roll call, unused `k0-k7` register lines); stripped `?? ()` frames stay — they are the backtrace
+- elfutils pass before GDB: `eu-stack -l` records the Build-ID of every loaded module — the one identification that survives stripping (matches exact library versions post-mortem). The section is skipped when `eu-stack` is absent and honestly marked as skipped when it cannot read the dump
 
 ## Core dumps
 

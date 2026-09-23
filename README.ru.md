@@ -11,6 +11,7 @@ hlds-run — краш-диагностическая обёртка для вы�
 - `gdb` — только для GDB-секции crash-отчётов
 - `coredumpctl` — только если `kernel.core_pattern` — pipe-handler (systemd-coredump)
 - `file` — для проверки, что core-дамп — настоящий ELF-core; при отсутствии выполняется только проверка по времени, и отчёт об этом сообщает
+- `elfutils` (`eu-stack`) — опционально: добавляет в crash-отчёты реестр Build-ID модулей; без него секция пропускается
 
 Проверено на Debian 11 (glibc 2.31), Debian 13 (glibc 2.44) и Arch Linux — на реальных серверах.
 
@@ -78,7 +79,8 @@ cp hlds_run /path/to/serverfiles/ && chmod +x /path/to/serverfiles/hlds_run
 - md5-суммы: бинарник сервера, все `.so` из корня сервера и из `<game>/dlls` — заметна подмена бинарников или модов
 - настройки core-дампа: `ulimit -c`, `kernel.core_pattern`
 - последние 100 строк stdout+stderr сервера, очищенные от pty `\r`, ANSI-кодов и аннотаций `script`
-- GDB-анализ дампа одним прогоном (`-nx`, без пользовательского `~/.gdbinit`), разбитый на подписанные секции — `Stacktrace` (`thread apply all bt full`), `Registers and frame info`, `Disassembly` (32 инструкции перед `$pc`), `Memory mappings`, `Shared libraries`. Известный шум gdb отфильтрован (`No symbol table info available`, предупреждения xstate, предупреждения об удалённых `/dev/shm`-маппингах, перекличка `[New LWP]`, строки регистров `k0-k7`); стрипнутые кадры `?? ()` остаются — это и есть backtrace
+- GDB-анализ дампа одним прогоном (`-nx`, без пользовательского `~/.gdbinit`), C++-значения печатаются в красивом виде, разбитый на подписанные секции — `Stacktrace` (`thread apply all bt full`), `Registers and frame info`, `Stack memory at $sp` (16 слов вокруг указателя стека), `Disassembly` (32 инструкции перед `$pc`), `Memory mappings`, `Shared libraries`. Известный шум gdb отфильтрован (`No symbol table info available`, предупреждения xstate, предупреждения об удалённых `/dev/shm`-маппингах, перекличка `[New LWP]`, строки регистров `k0-k7`); стрипнутые кадры `?? ()` остаются — это и есть backtrace
+- проход elfutils перед GDB: `eu-stack -l` записывает Build-ID каждого загруженного модуля — единственную идентификацию, выживающую при strip (позволяет после краша сопоставить точные версии библиотек). Секция пропускается, если `eu-stack` отсутствует, и честно помечается пропущенной, если тот не смог прочитать дамп
 
 ## Core-дампы
 
