@@ -46,6 +46,7 @@ Script-owned arguments (never passed to the server):
 | `-debug` | Core dumps + a full report on every crash; never touches the heap | off |
 | `-malloc-check` | glibc heap checking: `MALLOC_CHECK_=3` + `libc_malloc_debug` preload (see Heap debugging) | off |
 | `-malloc-perturb` | Allocation fill: `MALLOC_PERTURB_=170` (see Heap debugging) | off |
+| `-debuginfod` | Let GDB fetch debug symbols for system libraries during analysis (network; URLs follow gdb defaults, override via `DEBUGINFOD_URLS`) | off |
 | `-norestart` | No restart loop; the server exit code is propagated | restart on |
 | `-timeout N` | Delay between restarts, seconds (integer ≥ 1) | 10 |
 | `-binary <path>` | Another server binary | `./hlds_linux` |
@@ -81,6 +82,7 @@ Written per crash to `crash_report_<date>.txt` in the server root (the name carr
 - the last 100 lines of the server stdout+stderr, cleaned of pty `\r`, ANSI colors and `script` annotations
 - GDB analysis of the core in a single batch (`-nx`, no user `~/.gdbinit`), C++ values pretty-printed, split into labeled sections — `Stacktrace` (`thread apply all bt full`), `Registers and frame info`, `Stack memory at $sp` (16 words around the stack pointer), `Disassembly` (32 instructions before `$pc`), `Memory mappings`, `Shared libraries`. Known gdb noise is filtered out (`No symbol table info available`, xstate warnings, deleted-`/dev/shm` mapping warnings, the `[New LWP]` roll call, unused `k0-k7` register lines); stripped `?? ()` frames stay — they are the backtrace
 - elfutils pass before GDB: `eu-stack -l` records the Build-ID of every loaded module — the one identification that survives stripping (matches exact library versions post-mortem). The section is skipped when `eu-stack` is absent and honestly marked as skipped when it cannot read the dump
+- `-debuginfod` (opt-in): GDB may download debug symbols for system libraries from debuginfod servers during analysis — named frames for libc and friends instead of raw addresses. Costs network access and latency, and the build-ids of your libraries reach those servers; ignored with a startup warning when gdb lacks the support
 
 ## Core dumps
 

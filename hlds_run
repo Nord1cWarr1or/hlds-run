@@ -70,6 +70,11 @@ GAME="valve"
 DEBUG=0
 MALLOC_CHECK_ON=0
 MALLOC_PERTURB_ON=0
+# -debuginfod: let GDB fetch system-lib debug symbols during report
+# analysis (gdb >= 10.1 built with debuginfod). Off by default: it
+# sends the build-ids of the server's libraries to external symbol
+# servers and adds network latency to every report.
+DEBUGINFOD_ON=0
 RESTART="yes"
 HL="./hlds_linux"
 TIMEOUT=10
@@ -103,6 +108,7 @@ init() {
 		"-debug") DEBUG=1; shift ;;
 		"-malloc-check") MALLOC_CHECK_ON=1; shift ;;
 		"-malloc-perturb") MALLOC_PERTURB_ON=1; shift ;;
+		"-debuginfod") DEBUGINFOD_ON=1; shift ;;
 		"-norestart") RESTART=""; shift ;;
 		*) SRV_ARGS+=("$1"); shift ;;
 		esac
@@ -140,6 +146,18 @@ init() {
 			echo "Warning: core dumps could not be enabled (hard limit is 0 - container or service limits?)."
 		fi
 		if ! command -v "$GDB" &> /dev/null; then echo "Warning: 'gdb' not found."; fi
+		# -debuginfod: probe once whether this gdb understands the setting
+		# (needs gdb >= 10.1 built with debuginfod). A failed probe
+		# downgrades the flag with a warning instead of feeding gdb an
+		# unknown command mid-batch.
+		if [[ "$DEBUGINFOD_ON" -eq 1 ]]; then
+			if "$GDB" -nx -batch -ex 'set debuginfod enabled on' >/dev/null 2>&1; then
+				echo "debuginfod enabled for GDB analysis (URLs: gdb defaults, override via DEBUGINFOD_URLS)."
+			else
+				DEBUGINFOD_ON=0
+				echo "Warning: this gdb has no debuginfod support - '-debuginfod' ignored."
+			fi
+		fi
 	fi
 	# Loud heap-corruption detection - OPT-IN via -malloc-check. Deliberately
 	# NOT part of -debug: the debug malloc rearranges the heap, and -debug
@@ -493,7 +511,12 @@ debugcore() {
 			# headers printed by gdb itself via echo - the report stays
 			# split into labeled, greppable sections.
 			GDB_CMDS_FILE=$(mktemp)
-			cat > "$GDB_CMDS_FILE" <<-'EOF'
+			# The debuginfod line must precede the analysis commands:
+			# symbol fetching happens while the batch runs, not after it.
+			if [[ "$DEBUGINFOD_ON" -eq 1 ]]; then
+				printf 'set debuginfod enabled on\n' > "$GDB_CMDS_FILE"
+			fi
+			cat >> "$GDB_CMDS_FILE" <<-'EOF'
 			set pagination off
 			set confirm off
 			set print pretty on
