@@ -93,7 +93,7 @@ With `-debug`:
 - `ulimit -c unlimited` (with a warning if the limit did not rise — container or service limits)
 - after analysis the core is renamed to `crash_core.<date>.dmp`; dumps rotate, 3 newest kept
 - if `kernel.core_pattern` is a pipe handler (systemd-coredump configured, no file on disk), fresh dumps are exported via `coredumpctl dump hlds_linux` (up to 5 attempts with a pause — systemd processes dumps asynchronously) and removed after analysis
-- only dumps created after this server start and passing the ELF-core check (`file`) are analyzed; a `core*` left by an earlier crash or a random `core_*.txt` is ignored with a warning (the same time bound applies to `coredumpctl`)
+- only dumps that did not exist at server start (tracked by device:inode) and pass the ELF-core check (`file`) are analyzed; a `core*` left by an earlier crash or a random `core_*.txt` is ignored with a warning (the same time bound applies to `coredumpctl`)
 
 ## Heap debugging (opt-in)
 
@@ -106,11 +106,11 @@ The operator's own `LD_PRELOAD` (e.g. from a systemd unit) is never dropped, in 
 
 ## Console capture
 
-By default the server runs on a pty via `script`: live output goes to the operator's terminal, a copy lands in a hidden typescript in the server directory (on the real filesystem, not tmpfs; the 200 MiB `--output-limit` guards against a spamming console; when the limit is hit, `script` stops writing and the report marks the tail as possibly stale — it is frozen at truncation time, not crash time), from where the report takes the last 100 lines of both streams. The server command is handed to `script` through a temporary launcher file with a `#!/bin/bash` shebang — arguments are always parsed by bash, not by `$SHELL` (dash, fish and others would mangle quoting and Cyrillic). `script -e` preserves the server exit code. Without `script` — plain-tty fallback with a warning. There are no user-facing capture options — deliberate.
+By default the server runs on a pty via `script`: live output goes to the operator's terminal, a copy lands in a hidden typescript inside this run's private temporary directory (`mktemp -d`, mode 700, under `TMPDIR` or `/tmp`; the 200 MiB `--output-limit` guards against a spamming console; when the limit is hit, `script` stops writing and the report marks the tail as possibly stale — it is frozen at truncation time, not crash time), from where the report takes the last 100 lines of both streams. The server command is handed to `script` through a temporary launcher file with a `#!/bin/bash` shebang — arguments are always parsed by bash, not by `$SHELL` (dash, fish and others would mangle quoting and Cyrillic). `script -e` preserves the server exit code. Without `script` — plain-tty fallback with a warning. There are no user-facing capture options — deliberate.
 
-Before launch the wrapper probes both places capture needs: `TMPDIR` (the launcher lives there) and the server directory (the typescript lands there). An unwritable server directory only disables capture with a warning — the server runs as usual; an unwritable `TMPDIR` is a hard start error, because the launcher would be empty and the server would never start. In plain-tty mode the probes are skipped: no `TMPDIR` is needed there.
+Before launch the wrapper creates the run's private directory under `TMPDIR` (or `/tmp`). An unwritable `TMPDIR` does not stop the server: capture is disabled with a warning and the wrapper continues in plain-tty mode (the server directory itself is never written for capture). In plain-tty mode no private directory is created and `TMPDIR` is not needed.
 
-Leftover hygiene: a capture file is removed when the tail is taken, on any wrapper exit, and on session death (SIGHUP — a closed screen/SSH window). Deaths no trap can catch (`kill -9`, power loss) are covered at the next start: capture files older than one hour are swept from the server root and from `TMPDIR`.
+Leftover hygiene: the run's private directory is removed when the tail is taken, on any wrapper exit, and on session death (SIGHUP — a closed screen/SSH window). Deaths no trap can catch (`kill -9`, power loss) are covered at the next start: private directories older than one hour are swept from `TMPDIR`.
 
 ## Files and artifacts
 

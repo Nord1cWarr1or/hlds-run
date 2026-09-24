@@ -123,15 +123,32 @@ init() {
 	done
 	if [[ ! -d "$GAME" ]]; then echo "Error: Invalid game type '$GAME'"; exit 1; fi
 	if [[ ! -x "$HL" ]]; then echo "Error: Binary '$HL' not found or not executable."; exit 1; fi
-	if ! RUN_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hlds-run.XXXXXX" 2>/dev/null); then
-		echo "Error: cannot create a private temporary directory in TMPDIR='${TMPDIR:-/tmp}'."
-		exit 1
-	fi
-	chmod 700 "$RUN_TMP_DIR" || { echo "Error: cannot secure temporary directory '$RUN_TMP_DIR'."; exit 1; }
 	CAPTURE=1
 	if ! command -v script &> /dev/null; then
 		echo "Warning: 'script' not found - capture disabled, plain tty mode."
 		CAPTURE=0
+	fi
+	# Private per-run directory for the launcher and console capture. If it
+	# cannot be created or secured, the server still runs (plain fallback):
+	# only capture is given up, honestly. coredumpctl exports degrade the
+	# same way - they honestly skip without the directory.
+	if ! RUN_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hlds-run.XXXXXX" 2>/dev/null) || ! chmod 700 "$RUN_TMP_DIR" 2>/dev/null; then
+		RUN_TMP_DIR=""
+		CAPTURE=0
+		echo "Warning: cannot create a private temporary directory in TMPDIR='${TMPDIR:-/tmp}' - console capture disabled, plain tty mode."
+	fi
+	# Sweep private-directory leftovers from runs killed untrap-ably
+	# (SIGKILL, power loss - SIGHUP is handled by the trap above). Our
+	# namespace only; the one-hour guard keeps a concurrently written
+	# directory (fresh mtime) untouched.
+	local stale
+	stale="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'hlds-run.*' -mmin +60 2>/dev/null)"
+	if [[ -n "$stale" ]]; then
+		# rm -rf via -exec, not -delete: -delete only removes entries
+		# matching the predicates, so a stale directory with files inside
+		# would fail with "Directory not empty" and be silently skipped.
+		find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'hlds-run.*' -mmin +60 -exec rm -rf -- {} + 2>/dev/null || true
+		log_message "Swept $(echo "$stale" | wc -l) stale private temporary director(ies) from TMPDIR."
 	fi
 	if [[ "$DEBUG" -eq 1 ]]; then
 		echo "Debug mode is enabled. Core dumps will be generated on crash."
