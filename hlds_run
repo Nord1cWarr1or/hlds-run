@@ -488,7 +488,20 @@ debugcore() {
 		echo "[*] Core dump settings:"; echo "ulimit -c: $(ulimit -c)"; echo "kernel.core_pattern: $(cat /proc/sys/kernel/core_pattern 2>&1)"; echo ""
 		echo "[*] Listening sockets (TCP):"; if ! command -v ss &>/dev/null; then echo "(ss is not installed)"; elif ss -ltnp >/dev/null 2>&1; then ss -ltnp | head -n 15; else echo "(process info unavailable: needs root for -p)"; ss -ltn | head -n 15; fi; echo ""
 		echo "[*] Listening sockets (UDP):"; if ! command -v ss &>/dev/null; then echo "(ss is not installed)"; elif ss -ulnp >/dev/null 2>&1; then ss -ulnp | head -n 15; else echo "(process info unavailable: needs root for -p)"; ss -uln | head -n 15; fi; echo ""
-		echo "[*] Kernel Messages (dmesg last 50, common noise filtered):"; if dmesg >/dev/null 2>&1; then dmesg | grep -viE 'UFW BLOCK|audit:' | tail -n 50; else echo "(unavailable without root)"; fi; echo ""
+		echo "[*] Kernel Messages (last 50, common noise filtered):"
+		if dmesg >/dev/null 2>&1; then
+			echo "(source: dmesg)"
+			dmesg | grep -viE 'UFW BLOCK|audit:' | tail -n 50
+		elif command -v journalctl >/dev/null 2>&1 && journalctl -k -q --no-pager >/dev/null 2>&1; then
+			# dmesg restricted (kernel.dmesg_restrict=1, Debian default) but the
+			# user can read the journal (adm/systemd-journal group) - same
+			# kernel buffer, honest source label.
+			echo "(source: journalctl -k - dmesg restricted, kernel buffer read via journal access)"
+			journalctl -k -q --no-pager 2>/dev/null | grep -viE 'UFW BLOCK|audit:' | tail -n 50
+		else
+			echo "(unavailable without root)"
+		fi
+		echo ""
 
 		if [[ -n "$CONSOLE_TAIL" ]]; then
 			echo "----------------------------------------------------------------------"

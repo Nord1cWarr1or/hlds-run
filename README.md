@@ -75,7 +75,7 @@ After a crash the server restarts with a `-timeout` delay. The crash-loop guard 
 Written per crash to `crash_report_<date>.txt` in the server root (the name carries milliseconds, so two crashes in one millisecond never overwrite each other). Contents:
 
 - exit code, signal name (`128+N` → SIGSEGV/SIGABRT/…), full start line
-- system state: kernel, load average, memory, swap, disks, top processes by CPU and RSS, TCP/UDP sockets, last 50 `dmesg` lines (noise filtered; root-only sections are honestly marked)
+- system state: kernel, load average, memory, swap, disks, top processes by CPU and RSS, TCP/UDP sockets, last 50 kernel messages (`dmesg`; if dmesg is restricted — `journalctl -k` via journal access, e.g. the `adm` group; unavailable sections are honestly marked)
 - engine environment by an explicit allowlist (`LD_LIBRARY_PATH`, `LD_PRELOAD`, `MALLOC_CHECK_`, `MALLOC_PERTURB_`, `TERM`, `HOME`); `STEAM_*` and `PATH` never reach the report. The file is created with mode 600 — permissions are set before writing, not after
 - md5 sums: the server binary, every `.so` in the server root and in `<game>/dlls` — flags binary or mod tampering
 - core dump settings: `ulimit -c`, `kernel.core_pattern`
