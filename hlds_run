@@ -49,7 +49,10 @@ set -o pipefail
 CAPLOG_FILE=""
 GDB_CMDS_FILE=""
 LAUNCHER_FILE=""
+RUN_TMP_DIR=""
 systemd_tmp_core=""
+systemd_tmp_core_dir=""
+declare -A CORE_BEFORE=()
 
 # Invoked indirectly: `trap cleanup_temp EXIT` (SC2329 cannot see that).
 # shellcheck disable=SC2329
@@ -57,7 +60,9 @@ cleanup_temp() {
 	[[ -n "$CAPLOG_FILE" ]] && { rm -f "$CAPLOG_FILE"; CAPLOG_FILE=""; }
 	[[ -n "$GDB_CMDS_FILE" ]] && { rm -f "$GDB_CMDS_FILE"; GDB_CMDS_FILE=""; }
 	[[ -n "$LAUNCHER_FILE" ]] && { rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""; }
-	[[ -n "$systemd_tmp_core" ]] && { rm -rf "$(dirname "$systemd_tmp_core")"; systemd_tmp_core=""; }
+	[[ -n "$systemd_tmp_core" ]] && { rm -f -- "$systemd_tmp_core"; systemd_tmp_core=""; }
+	[[ -n "$systemd_tmp_core_dir" ]] && { rm -rf -- "$systemd_tmp_core_dir"; systemd_tmp_core_dir=""; }
+	[[ -n "$RUN_TMP_DIR" ]] && { rm -rf -- "$RUN_TMP_DIR"; RUN_TMP_DIR=""; }
 }
 
 # Bash skips the EXIT trap on a fatal signal - route INT/TERM/HUP through
@@ -118,44 +123,15 @@ init() {
 	done
 	if [[ ! -d "$GAME" ]]; then echo "Error: Invalid game type '$GAME'"; exit 1; fi
 	if [[ ! -x "$HL" ]]; then echo "Error: Binary '$HL' not found or not executable."; exit 1; fi
-	# Sweep capture leftovers from runs killed untrap-ably (SIGKILL, power
-	# loss - SIGHUP is handled by the trap above). Our namespace only; the
-	# one-hour guard keeps a concurrently written caplog (fresh mtime)
-	# untouched.
-	local stale
-	stale="$(find . -maxdepth 1 -name '.caplog.*' -mmin +60 2>/dev/null)"
-	if [[ -n "$stale" ]]; then
-		find . -maxdepth 1 -name '.caplog.*' -mmin +60 -delete 2>/dev/null || true
-		log_message "Removed $(echo "$stale" | wc -l) stale console capture file(s)."
+	if ! RUN_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hlds-run.XXXXXX" 2>/dev/null); then
+		echo "Error: cannot create a private temporary directory in TMPDIR='${TMPDIR:-/tmp}'."
+		exit 1
 	fi
-	stale="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name '.caplog.*' -mmin +60 2>/dev/null)"
-	if [[ -n "$stale" ]]; then
-		find "${TMPDIR:-/tmp}" -maxdepth 1 -name '.caplog.*' -mmin +60 -delete 2>/dev/null || true
-		log_message "Removed $(echo "$stale" | wc -l) stale console capture file(s) in TMPDIR."
-	fi
+	chmod 700 "$RUN_TMP_DIR" || { echo "Error: cannot secure temporary directory '$RUN_TMP_DIR'."; exit 1; }
 	CAPTURE=1
 	if ! command -v script &> /dev/null; then
 		echo "Warning: 'script' not found - capture disabled, plain tty mode."
 		CAPTURE=0
-	fi
-	if [[ "$CAPTURE" -eq 1 ]]; then
-		# Writable-workspace probe: both mktemp call sites must succeed or
-		# the server cannot start at all - and without a check a missing
-		# temp file masquerades as a "crash" (audit G1/G3). The launcher
-		# lives in TMPDIR, the console capture in the server dir. Neither is
-		# needed in plain-tty mode, so the probe runs only when capture is on.
-		local t
-		if ! t=$(mktemp 2>/dev/null); then
-			echo "Error: cannot create temp files in TMPDIR='${TMPDIR:-/tmp}' (read-only?) - launcher would be empty and the server would never start. Exiting."
-			exit 1
-		fi
-		rm -f "$t"
-		if ! t=$(mktemp "./.caplog.XXXXXX" 2>/dev/null); then
-			echo "Warning: cannot create ./.caplog.* in '$PWD' (read-only dir?) - console capture disabled, plain tty mode."
-			CAPTURE=0
-		else
-			rm -f "$t"
-		fi
 	fi
 	if [[ "$DEBUG" -eq 1 ]]; then
 		echo "Debug mode is enabled. Core dumps will be generated on crash."
@@ -272,7 +248,7 @@ make_launcher() {
 	# shebang; whatever shell `script` uses, it just executes that file,
 	# and the args are parsed by our bash. Reuses the %q technique, but
 	# only where it is guaranteed valid.
-	LAUNCHER_FILE=$(mktemp) || { echo "Error: cannot create launcher temp file - aborting before launching the server."; exit 1; }
+	LAUNCHER_FILE=$(mktemp "$RUN_TMP_DIR/launcher.XXXXXX") || { echo "Error: cannot create launcher temp file - aborting before launching the server."; exit 1; }
 	if [[ -z "$LAUNCHER_FILE" ]]; then echo "Error: empty launcher temp file name - aborting before launching the server."; exit 1; fi
 	printf '#!/bin/bash\n' > "$LAUNCHER_FILE"
 	if [[ -n "$HEAP_PRELOAD" || -n "$operator_preload" ]]; then
@@ -300,23 +276,19 @@ launch_server() {
 	# library and re-attached to the server run here (capture: launcher
 	# export; non-capture: env prefix).
 	local operator_preload="${OPERATOR_PRELOAD:-}"
-	# Keep the typescript on disk next to the server (never in /tmp:
-	# on many systems it is tmpfs and a chatty console can eat RAM).
+	# Keep the typescript inside this run's private temporary directory; it is
+	# removed on exit and cannot collide with another wrapper instance.
 	# --output-limit is a runaway-console safety net (util-linux >= 2.32);
 	# failures to apply it are harmless - the limit is far above the
 	# ~100 lines the report actually reads.
-	CAPLOG_FILE=$(mktemp "./.caplog.XXXXXX") || CAPLOG_FILE=""
+	CAPLOG_FILE=$(mktemp "$RUN_TMP_DIR/caplog.XXXXXX") || CAPLOG_FILE=""
 	if [[ -z "$CAPLOG_FILE" ]]; then
 		# Primary path lost writability mid-run (probe at init passed) -
 		# fall back to TMPDIR rather than launching with an empty name
 		# (an empty caplog name would prevent `script` from spawning the
 		# server at all and fake a crash, audit G1).
-		log_message "Warning: ./.caplog.* could not be created (read-only dir?) - falling back to TMPDIR for this run."
-		CAPLOG_FILE=$(mktemp "${TMPDIR:-/tmp}/.caplog.XXXXXX") || CAPLOG_FILE=""
-		if [[ -z "$CAPLOG_FILE" ]]; then
-			log_message "Warning: caplog unavailable - capture disabled, plain tty mode for this run."
-			CAPTURE=0
-		fi
+		log_message "Warning: console capture file could not be created - capture disabled, plain tty mode for this run."
+		CAPTURE=0
 	fi
 	local limit_args=()
 	if script --help 2>&1 | grep -q -- '--output-limit'; then
@@ -364,6 +336,15 @@ $CONSOLE_TAIL"
 	return $exitcode
 }
 
+snapshot_cores() {
+	CORE_BEFORE=()
+	local path identity
+	while IFS= read -r -d '' path; do
+		identity=$(stat -c '%d:%i' -- "$path" 2>/dev/null) || continue
+		CORE_BEFORE["$path"]=$identity
+	done < <(find . -maxdepth 1 -type f -name 'core*' -print0 2>/dev/null)
+}
+
 debugcore() {
 	local exitcode=$1
 	local since_ts=${2:-0}
@@ -402,7 +383,17 @@ debugcore() {
     # Recorded here, emitted inside the report block below: a note printed
     # to the terminal would not survive in the archived report.
     local core_note=""
-    CORE_FILE=$(find . -maxdepth 1 -type f -name 'core*' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
+    CORE_FILE=""
+    local candidate candidate_identity candidate_mtime newest_mtime=""
+    while IFS= read -r -d '' candidate; do
+        candidate_identity=$(stat -c '%d:%i' -- "$candidate" 2>/dev/null) || continue
+        [[ -n "${CORE_BEFORE[$candidate]+present}" && "${CORE_BEFORE[$candidate]}" == "$candidate_identity" ]] && continue
+        candidate_mtime=$(stat -c %y -- "$candidate" 2>/dev/null) || continue
+        if [[ -z "$CORE_FILE" || "$candidate_mtime" > "$newest_mtime" ]]; then
+            CORE_FILE="$candidate"
+            newest_mtime="$candidate_mtime"
+        fi
+    done < <(find . -maxdepth 1 -type f -name 'core*' -print0 2>/dev/null)
     if [[ ! -f "$CORE_FILE" ]]; then
         CORE_FILE=""
     fi
@@ -434,27 +425,35 @@ debugcore() {
         local core_pattern
         core_pattern="$(cat /proc/sys/kernel/core_pattern 2>/dev/null)"
         if [[ "$core_pattern" == "|"* ]] && command -v coredumpctl &>/dev/null; then
-            systemd_tmp_core="$(mktemp -d)/core"
-            log_message "No local core file; core_pattern is a handler - trying 'coredumpctl dump'..."
-            local since_args=()
-            [[ $since_ts -gt 0 ]] && since_args=(--since "@$since_ts")
-            # systemd-coredump processes dumps asynchronously: the journal
-            # entry may not exist yet right after the crash - retry briefly.
-            local try ok=1
-            for try in 1 2 3 4 5; do
-                if coredumpctl dump "${HL##*/}" "${since_args[@]}" --output="$systemd_tmp_core" >/dev/null 2>&1 && [[ -s "$systemd_tmp_core" ]]; then
-                    ok=1
-                    break
-                fi
-                ok=0
-                [[ $try -lt 5 ]] && sleep 1
-            done
-            if [[ $ok -eq 1 ]]; then
-                CORE_FILE="$systemd_tmp_core"
-            else
-                rm -rf "$(dirname "$systemd_tmp_core")"
+            if ! systemd_tmp_core_dir=$(mktemp -d "$RUN_TMP_DIR/coredump.XXXXXX" 2>/dev/null); then
+                log_message "Warning: cannot create a private directory for coredumpctl export."
                 systemd_tmp_core=""
-                log_message "Warning: coredumpctl dump failed (journal access denied, no matching dump, or dump not processed yet)."
+            else
+                systemd_tmp_core="$systemd_tmp_core_dir/core"
+            fi
+            if [[ -n "$systemd_tmp_core" ]]; then
+                log_message "No local core file; core_pattern is a handler - trying 'coredumpctl dump'..."
+                local since_args=()
+                [[ $since_ts -gt 0 ]] && since_args=(--since "@$since_ts")
+                # systemd-coredump processes dumps asynchronously: the journal
+                # entry may not exist yet right after the crash - retry briefly.
+                local try ok=1
+                for try in 1 2 3 4 5; do
+                    if coredumpctl dump "${HL##*/}" "${since_args[@]}" --output="$systemd_tmp_core" >/dev/null 2>&1 && [[ -s "$systemd_tmp_core" ]]; then
+                        ok=1
+                        break
+                    fi
+                    ok=0
+                    [[ $try -lt 5 ]] && sleep 1
+                done
+                if [[ $ok -eq 1 ]]; then
+                    CORE_FILE="$systemd_tmp_core"
+                else
+                    rm -rf -- "$systemd_tmp_core_dir"
+                    systemd_tmp_core=""
+                    systemd_tmp_core_dir=""
+                    log_message "Warning: coredumpctl dump failed (journal access denied, no matching dump, or dump not processed yet)."
+                fi
             fi
         fi
     fi
@@ -592,8 +591,9 @@ debugcore() {
 			if [[ -n "$systemd_tmp_core" ]]; then
 				# Exported systemd dump: not ours to keep - remove after analysis.
 				rm -f "$systemd_tmp_core"
-				rmdir "$(dirname "$systemd_tmp_core")" 2>/dev/null
+				rmdir -- "$systemd_tmp_core_dir" 2>/dev/null
 				systemd_tmp_core=""
+				systemd_tmp_core_dir=""
 				echo ""
 				echo "Core dump was exported from systemd-coredump and removed after analysis."
 			else
@@ -632,6 +632,7 @@ run() {
 		while true; do
 			log_message "Starting server..."
 			local start_ts; start_ts=$(date +%s)
+			snapshot_cores
 			launch_server
 			local retval=$?
 			local life=$(( $(date +%s) - start_ts ))
@@ -668,6 +669,7 @@ run() {
 	else
 		log_message "Starting server (no restart)"
 		local start_ts; start_ts=$(date +%s)
+		snapshot_cores
 		launch_server
 		local exitcode=$?
 		debugcore $exitcode "$start_ts"

@@ -116,7 +116,7 @@ Leftover hygiene: a capture file is removed when the tail is taken, on any wrapp
 
 | File | Created | Lifetime |
 |------|---------|----------|
-| `.caplog.XXXXXX` | every server run | deleted right after the console tail is taken (EXIT-trap fallback); stale leftovers are swept at the next start |
+| private `hlds-run.XXXXXX` directory | every wrapper run | contains the launcher and console capture; removed by the EXIT trap with mode 700 |
 | `crash_report_<date>.txt` | every crash | kept, no rotation — by design |
 | `crash_core.<date>.dmp` | every analyzed crash | rotated, 3 newest kept |
 | `server_stop_<date>.log` | clean operator stop (130/143) | rotated, 3 newest kept |
