@@ -110,11 +110,13 @@ By default the server runs on a pty via `script`: live output goes to the operat
 
 Before launch the wrapper probes both places capture needs: `TMPDIR` (the launcher lives there) and the server directory (the typescript lands there). An unwritable server directory only disables capture with a warning — the server runs as usual; an unwritable `TMPDIR` is a hard start error, because the launcher would be empty and the server would never start. In plain-tty mode the probes are skipped: no `TMPDIR` is needed there.
 
+Leftover hygiene: a capture file is removed when the tail is taken, on any wrapper exit, and on session death (SIGHUP — a closed screen/SSH window). Deaths no trap can catch (`kill -9`, power loss) are covered at the next start: capture files older than one hour are swept from the server root and from `TMPDIR`.
+
 ## Files and artifacts
 
 | File | Created | Lifetime |
 |------|---------|----------|
-| `.caplog.XXXXXX` | every server run | deleted right after the console tail is taken (EXIT-trap fallback) |
+| `.caplog.XXXXXX` | every server run | deleted right after the console tail is taken (EXIT-trap fallback); stale leftovers are swept at the next start |
 | `crash_report_<date>.txt` | every crash | kept, no rotation — by design |
 | `crash_core.<date>.dmp` | every analyzed crash | rotated, 3 newest kept |
 | `server_stop_<date>.log` | clean operator stop (130/143) | rotated, 3 newest kept |
