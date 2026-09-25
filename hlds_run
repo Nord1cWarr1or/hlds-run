@@ -501,7 +501,7 @@ debugcore() {
 		echo "[*] Binary checksum ($HL):"; md5sum "$HL" 2>&1; echo ""
 		echo "[*] Library checksums (all .so in server root):"; local so_list; so_list=$(find . -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 -r md5sum 2>/dev/null); [[ -n "$so_list" ]] && echo "$so_list" || echo "(none found)"; echo ""
 		echo "[*] Game DLLs ($GAME/dlls):"; local dll_list; dll_list=$(find "$GAME/dlls" -maxdepth 1 -name '*.so' -print0 2>/dev/null | xargs -0 -r md5sum 2>/dev/null); [[ -n "$dll_list" ]] && echo "$dll_list" || echo "(none found)"; echo ""
-		echo "[*] Core dump settings:"; echo "ulimit -c: $(ulimit -c)"; echo "kernel.core_pattern: $(cat /proc/sys/kernel/core_pattern 2>&1)"; echo ""
+		echo "[*] Core dump settings:"; echo "ulimit -c: $(ulimit -c)"; echo "kernel.core_pattern: $(cat /proc/sys/kernel/core_pattern 2>&1)"; echo "kernel.core_uses_pid: $(cat /proc/sys/kernel/core_uses_pid 2>&1)"; echo ""
 		echo "[*] Listening sockets (TCP):"; if ! command -v ss &>/dev/null; then echo "(ss is not installed)"; elif ss -ltnp >/dev/null 2>&1; then ss -ltnp | head -n 15; else echo "(process info unavailable: needs root for -p)"; ss -ltn | head -n 15; fi; echo ""
 		echo "[*] Listening sockets (UDP):"; if ! command -v ss &>/dev/null; then echo "(ss is not installed)"; elif ss -ulnp >/dev/null 2>&1; then ss -ulnp | head -n 15; else echo "(process info unavailable: needs root for -p)"; ss -uln | head -n 15; fi; echo ""
 		echo "[*] Kernel Messages (last 50, common noise filtered):"
