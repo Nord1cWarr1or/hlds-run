@@ -68,7 +68,7 @@ Tunables live at the top of the script:
 
 ## Restart loop
 
-After a crash the server restarts with a `-timeout` delay. The crash-loop guard stops the wrapper after `STREAK_LIMIT` crashes in a row where each run lived shorter than `HEALTHY_UPTIME` seconds ("Crash-loop detected"). A single crash after long uptime resets the streak. A clean exit (code 0, Ctrl+C/SIGINT, SIGTERM — a normal systemd stop) ends the loop without a report. On an operator stop (130/143) the last ~100 console lines are saved to `server_stop_<date>.log` (mode 600) next to the reports — in any mode, including without `-debug`; stop logs rotate, 3 newest kept.
+After a crash the server restarts with a `-timeout` delay. The crash-loop guard stops the wrapper after `STREAK_LIMIT` crashes in a row where each run lived shorter than `HEALTHY_UPTIME` seconds ("Crash-loop detected"). A single crash after long uptime resets the streak. A clean exit (code 0, Ctrl+C/SIGINT, SIGTERM — a normal systemd stop) ends the loop without a report.
 
 ## Crash report
 
@@ -119,7 +119,6 @@ Leftover hygiene: the run's private directory is removed when the tail is taken,
 | private `hlds-run.XXXXXX` directory | every wrapper run | contains the launcher and console capture; removed by the EXIT trap with mode 700 |
 | `crash_report_<date>.txt` | every crash | kept, no rotation — by design |
 | `crash_core.<date>.dmp` | every analyzed crash | rotated, 3 newest kept |
-| `server_stop_<date>.log` | clean operator stop (130/143) | rotated, 3 newest kept |
 
 Reads: the server binary and libraries (md5 sums), `/proc`, core dumps. `STEAM_*` and `PATH` values are never written anywhere.
 

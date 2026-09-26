@@ -2,7 +2,6 @@
 .caplog.*
 crash_report_*.txt
 crash_core.*.dmp
-server_stop_*.log
 core
 core.*
 
