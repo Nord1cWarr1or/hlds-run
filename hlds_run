@@ -15,8 +15,10 @@
 #         (original appends everything into one debug.log).
 #       - Console capture via pty: operator keeps the live view and
 #         the report gets the last 100 lines of both streams, CR and
-#         ANSI codes stripped. Fallback to plain tty if `script` is
-#         missing (with a warning).
+#         ANSI codes stripped. The typescript goes through a pipe into
+#         `tail -n 100`: memory is bounded by those lines, no output
+#         limit that would kill a long-running server. Fallback to
+#         plain tty if `script` is missing (with a warning).
 #       - systemd-coredump supported: if core_pattern is a pipe
 #         handler, the dump is exported via coredumpctl.
 #       - Core dump management: after analysis the core is renamed
@@ -47,6 +49,9 @@ set -o pipefail
 
 # --- Temporary-state tracking + cleanup on any exit path ---
 CAPLOG_FILE=""
+# Write end of the console-capture pipe (fd number), set only while a
+# captured server runs; make_launcher closes it in the server process.
+CAP_FD=""
 GDB_CMDS_FILE=""
 LAUNCHER_FILE=""
 RUN_TMP_DIR=""
@@ -123,9 +128,23 @@ init() {
 	done
 	if [[ ! -d "$GAME" ]]; then echo "Error: Invalid game type '$GAME'"; exit 1; fi
 	if [[ ! -x "$HL" ]]; then echo "Error: Binary '$HL' not found or not executable."; exit 1; fi
+	# The launcher runs the server as `env ... "$HL"`: env would take a path
+	# containing '=' for a NAME=VALUE assignment, not for the command.
+	if [[ "$HL" == *=* ]]; then echo "Error: binary path '$HL' must not contain '='."; exit 1; fi
 	CAPTURE=1
 	if ! command -v script &> /dev/null; then
 		echo "Warning: 'script' not found - capture disabled, plain tty mode."
+		CAPTURE=0
+	elif ! command -v tail &> /dev/null; then
+		echo "Warning: 'tail' not found - capture disabled, plain tty mode."
+		CAPTURE=0
+	elif ! env --default-signal=PIPE true &> /dev/null; then
+		# Capture runs `script` with SIGPIPE ignored (a dead capture reader
+		# must not kill it - see launch_server) and the launcher restores
+		# the default for the server via env --default-signal (coreutils
+		# >= 8.31). Without it the server would inherit an ignored SIGPIPE
+		# - a behavior change; give capture up instead.
+		echo "Warning: 'env --default-signal' unsupported (coreutils < 8.31) - capture disabled, plain tty mode."
 		CAPTURE=0
 	fi
 	# Private per-run directory for the launcher and console capture. If it
@@ -137,19 +156,15 @@ init() {
 		CAPTURE=0
 		echo "Warning: cannot create a private temporary directory in TMPDIR='${TMPDIR:-/tmp}' - console capture disabled, plain tty mode."
 	fi
-	# Sweep private-directory leftovers from runs killed untrap-ably
-	# (SIGKILL, power loss - SIGHUP is handled by the trap above). Our
-	# namespace only; the one-hour guard keeps a concurrently written
-	# directory (fresh mtime) untouched.
-	local stale
-	stale="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'hlds-run.*' -mmin +60 2>/dev/null)"
-	if [[ -n "$stale" ]]; then
-		# rm -rf via -exec, not -delete: -delete only removes entries
-		# matching the predicates, so a stale directory with files inside
-		# would fail with "Directory not empty" and be silently skipped.
-		find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'hlds-run.*' -mmin +60 -exec rm -rf -- {} + 2>/dev/null || true
-		log_message "Swept $(echo "$stale" | wc -l) stale private temporary director(ies) from TMPDIR."
+	# Mark the directory as ours (PID + process start time), then sweep
+	# leftovers of runs killed untrap-ably (SIGKILL, power loss - SIGHUP is
+	# handled by the trap above). Liveness is decided by the owner process,
+	# not by age: a long-running instance never touches its directory's
+	# mtime, so an age rule would delete a live neighbor's capture.
+	if [[ -n "$RUN_TMP_DIR" ]]; then
+		printf '%s %s\n' "$$" "$(proc_starttime "$$")" > "$RUN_TMP_DIR/owner" 2>/dev/null
 	fi
+	sweep_stale_dirs
 	if [[ "$DEBUG" -eq 1 ]]; then
 		echo "Debug mode is enabled. Core dumps will be generated on crash."
 		ulimit -c unlimited
@@ -242,6 +257,52 @@ log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] - $1"
 }
 
+# Start time of a process (field 22 of /proc/PID/stat, clock ticks since
+# boot). PID + start time identify a process even if the PID is reused.
+# The comm field may contain spaces and ')' - parse after the last ')'.
+proc_starttime() {
+	local stat
+	stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+	[[ -n "$stat" ]] || return 1
+	stat="${stat##*) }"
+	# shellcheck disable=SC2086 # word splitting into fields is intended
+	set -- $stat
+	printf '%s' "${20}"
+}
+
+# Is a private directory still in use? With an owner file (this version):
+# the owner process (same PID and start time) is alive. Without one (older
+# wrapper versions, or a neighbor that has just created its directory):
+# keep it while it is younger than an hour or while any process names it in
+# its command line - an older wrapper's `script` carries the launcher and
+# typescript paths there for the whole run.
+private_dir_in_use() {
+	local dir=$1 owner_pid owner_start
+	if [[ -f "$dir/owner" ]]; then
+		read -r owner_pid owner_start < "$dir/owner" 2>/dev/null
+		[[ "$owner_pid" =~ ^[0-9]+$ && -n "$owner_start" ]] || return 1
+		[[ "$(proc_starttime "$owner_pid")" == "$owner_start" ]]
+		return
+	fi
+	[[ -n "$(find "$dir" -maxdepth 0 -mmin -60 2>/dev/null)" ]] && return 0
+	# Pattern via -f, not argv: grep would otherwise find it in its own
+	# /proc/self/cmdline. Matched by directory name (TMPDIR spelling, e.g. a
+	# trailing slash, may differ between the paths).
+	grep -qasF -f <(printf '/%s/\n' "${dir##*/}") /proc/[0-9]*/cmdline 2>/dev/null
+}
+
+sweep_stale_dirs() {
+	local dir swept=0
+	while IFS= read -r -d '' dir; do
+		[[ "$dir" == "$RUN_TMP_DIR" ]] && continue
+		private_dir_in_use "$dir" && continue
+		rm -rf -- "$dir" 2>/dev/null && swept=$(( swept + 1 ))
+	done < <(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'hlds-run.*' -user "$(id -u)" -print0 2>/dev/null)
+	if [[ $swept -gt 0 ]]; then
+		log_message "Swept $swept stale private temporary director(ies) from TMPDIR."
+	fi
+}
+
 # Timestamp for artifact names: <format>.<milliseconds>. %N prints 9
 # digits of nanoseconds - keep the first 3 (milliseconds): still
 # collision-proof for two artifacts in one second, 6 characters
@@ -268,18 +329,26 @@ make_launcher() {
 	LAUNCHER_FILE=$(mktemp "$RUN_TMP_DIR/launcher.XXXXXX") || { echo "Error: cannot create launcher temp file - aborting before launching the server."; exit 1; }
 	if [[ -z "$LAUNCHER_FILE" ]]; then echo "Error: empty launcher temp file name - aborting before launching the server."; exit 1; fi
 	printf '#!/bin/bash\n' > "$LAUNCHER_FILE"
+	# The capture pipe's write end must not leak into the server: the reader
+	# only sees EOF once every writer is gone.
+	if [[ -n "${CAP_FD:-}" ]]; then
+		printf 'exec %d>&-\n' "$CAP_FD" >> "$LAUNCHER_FILE"
+	fi
+	# `script` runs with SIGPIPE ignored (launch_server); give the server
+	# the default disposition back - capture must not change its behavior.
+	printf 'exec env --default-signal=PIPE ' >> "$LAUNCHER_FILE"
 	if [[ -n "$HEAP_PRELOAD" || -n "$operator_preload" ]]; then
-		# Set inside the launcher: `script` and the launcher bash itself
-		# run without the variable (no ELF-class noise from 64-bit
-		# helpers); `exec` passes it only to the server process. Both the
-		# wrapper's own -debug preload and the operator's own LD_PRELOAD
-		# land here (audit H1: operator's value is never silently dropped).
+		# Passed as an env assignment: `script`, the launcher bash and env
+		# itself run without the variable (no ELF-class noise from 64-bit
+		# helpers); only the server process gets it. Both the wrapper's own
+		# -malloc-check preload and the operator's own LD_PRELOAD land here
+		# (audit H1: operator's value is never silently dropped).
 		local all_preloads=""
 		[[ -n "$HEAP_PRELOAD" ]] && all_preloads="$HEAP_PRELOAD"
 		[[ -n "$operator_preload" ]] && all_preloads="${all_preloads:+$all_preloads:}$operator_preload"
-		printf 'export LD_PRELOAD=%q\n' "$all_preloads" >> "$LAUNCHER_FILE"
+		printf '%q ' "LD_PRELOAD=$all_preloads" >> "$LAUNCHER_FILE"
 	fi
-	printf 'exec %q ' "$HL" >> "$LAUNCHER_FILE"
+	printf '%q ' "$HL" >> "$LAUNCHER_FILE"
 	local a
 	for a in "${SRV_ARGS[@]}"; do printf '%q ' "$a" >> "$LAUNCHER_FILE"; done
 	printf '2>&1\n' >> "$LAUNCHER_FILE"
@@ -290,38 +359,62 @@ launch_server() {
 	CONSOLE_TAIL=""
 	# operator_preload comes from init(): the operator's LD_PRELOAD was moved
 	# out of the SHELL scope there, deduplicated against the heap-debug
-	# library and re-attached to the server run here (capture: launcher
-	# export; non-capture: env prefix).
+	# library and re-attached to the server run here (capture: env
+	# assignment in the launcher; non-capture: env prefix).
 	local operator_preload="${OPERATOR_PRELOAD:-}"
-	# Keep the typescript inside this run's private temporary directory; it is
-	# removed on exit and cannot collide with another wrapper instance.
-	# --output-limit is a runaway-console safety net (util-linux >= 2.32);
-	# failures to apply it are harmless - the limit is far above the
-	# ~100 lines the report actually reads.
-	CAPLOG_FILE=$(mktemp "$RUN_TMP_DIR/caplog.XXXXXX") || CAPLOG_FILE=""
-	if [[ -z "$CAPLOG_FILE" ]]; then
-		# Primary path lost writability mid-run (probe at init passed) -
-		# fall back to TMPDIR rather than launching with an empty name
-		# (an empty caplog name would prevent `script` from spawning the
-		# server at all and fake a crash, audit G1).
-		log_message "Warning: console capture file could not be created - capture disabled, plain tty mode for this run."
-		CAPTURE=0
-	fi
-	local limit_args=()
-	if script --help 2>&1 | grep -q -- '--output-limit'; then
-		limit_args=(--output-limit 200MiB)
-	fi
-	if [[ "$CAPTURE" -eq 1 ]]; then
-		make_launcher
-		if [[ ${#limit_args[@]} -gt 0 ]]; then
-			# -c BEFORE the positional file: under POSIXLY_CORRECT getopt
-			# stops parsing at the first positional argument (audit G4).
-			script -q -e "${limit_args[@]}" -c "\"$LAUNCHER_FILE\"" "$CAPLOG_FILE"
-		else
-			script -qec "\"$LAUNCHER_FILE\"" "$CAPLOG_FILE"
+	local capture="$CAPTURE" tail_note=""
+	# The report needs only the last 100 console lines. `script` writes its
+	# typescript into a pipe read by `tail -n 100`, which keeps just those
+	# lines in memory and writes them to CAPLOG_FILE at EOF (server exit):
+	# memory stays bounded however long the server runs and however much it
+	# prints. No --output-limit: when exceeded, `script` SIGTERMs the child -
+	# it would kill a healthy server (and the wrapper would restart it as a
+	# "crash"). CAPLOG_FILE lives in this run's private directory.
+	CAPLOG_FILE=""
+	if [[ "$capture" -eq 1 ]]; then
+		CAPLOG_FILE=$(mktemp "$RUN_TMP_DIR/contail.XXXXXX") || CAPLOG_FILE=""
+		if [[ -z "$CAPLOG_FILE" ]]; then
+			# An empty name would make `script` fail to spawn the server and
+			# fake a crash (audit G1) - run this launch uncaptured instead.
+			log_message "Warning: console capture file could not be created - capture disabled, plain tty mode for this run."
+			capture=0
 		fi
+	fi
+	if [[ "$capture" -eq 1 ]]; then
+		# Anonymous pipe (process substitution), not a named FIFO: it is
+		# already connected to its reader when `script` opens /dev/fd/N, so
+		# that open can never block waiting for a reader.
+		local tail_pid
+		exec {CAP_FD}> >(trap '' INT; exec tail -n 100 > "$CAPLOG_FILE")
+		tail_pid=$!
+		make_launcher
+		# SIGPIPE ignored for `script` only: if the reader dies, writes to the
+		# pipe fail with EPIPE and `script` keeps relaying the console and
+		# waits for the server (with the default disposition `script` would
+		# die and orphan a running server - the restart loop would then start
+		# a second one on the same port). The launcher restores the default
+		# for the server itself. -c BEFORE the positional file: under
+		# POSIXLY_CORRECT getopt stops at the first positional (audit G4).
+		( trap '' PIPE; exec script -q -e -c "\"$LAUNCHER_FILE\"" "/dev/fd/$CAP_FD" )
 		local exitcode=$?
 		rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""
+		# Close our write end: the reader gets EOF and writes the tail. Wait
+		# for it briefly - a stuck reader must not hold up the restart loop.
+		exec {CAP_FD}>&-
+		CAP_FD=""
+		local waited=0
+		while kill -0 "$tail_pid" 2>/dev/null && [[ $waited -lt 50 ]]; do
+			sleep 0.1; waited=$(( waited + 1 ))
+		done
+		if kill -0 "$tail_pid" 2>/dev/null; then
+			kill "$tail_pid" 2>/dev/null
+			tail_note="[!] console capture reader did not finish in 5s - tail missing."
+		fi
+		wait "$tail_pid" 2>/dev/null
+		local tail_rc=$?
+		if [[ -z "$tail_note" && $tail_rc -ne 0 ]]; then
+			tail_note="[!] console capture reader ended early (rc=$tail_rc) - tail missing or incomplete."
+		fi
 	else
 		local combined_preload=""
 		[[ -n "$HEAP_PRELOAD" ]] && combined_preload="$HEAP_PRELOAD"
@@ -334,21 +427,18 @@ launch_server() {
 		fi
 		local exitcode=$?
 	fi
-	if [[ -f "$CAPLOG_FILE" ]]; then
+	if [[ -n "$CAPLOG_FILE" && -f "$CAPLOG_FILE" ]]; then
 		# The pty turns \n into \r\n and the engine prints ANSI colors:
 		# strip CRs and escape sequences (ESC and '[' are literal here, so the
 		# substitution uses no GNU-only escapes and stays quiet under
 		# POSIXLY_CORRECT), then drop `script` annotations.
-		CONSOLE_TAIL=$(tail -n 100 "$CAPLOG_FILE" | tr -d '\r' | sed $'s/\033[[][0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)' | grep -v 'from LD_PRELOAD cannot be preloaded')
-		# --output-limit stops WRITING when reached: the tail is frozen at
-		# the truncation moment, not at the crash. Detect the marker so the
-		# report can warn about a possibly stale tail (audit H4).
-		if grep -q '<max output size exceeded>' "$CAPLOG_FILE" 2>/dev/null; then
-			CONSOLE_TAIL="[!] console capture was truncated (output limit reached) - this tail may be stale.
-$CONSOLE_TAIL"
-		fi
+		CONSOLE_TAIL=$(tr -d '\r' < "$CAPLOG_FILE" | sed $'s/\033[[][0-9;]*[A-Za-z]//g' | grep -v '^Script \(started\|done\)' | grep -v 'from LD_PRELOAD cannot be preloaded')
 		rm -f "$CAPLOG_FILE"
 		CAPLOG_FILE=""
+	fi
+	if [[ -n "$tail_note" ]]; then
+		CONSOLE_TAIL="$tail_note${CONSOLE_TAIL:+
+$CONSOLE_TAIL}"
 	fi
 	return $exitcode
 }

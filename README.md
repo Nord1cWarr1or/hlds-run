@@ -7,7 +7,7 @@ hlds-run is a bash crash-diagnostics wrapper for the Half-Life dedicated server 
 ## Requirements
 
 - Linux, bash 4+
-- `util-linux` `script` ≥ 2.32 — for console capture; without it the wrapper falls back to a plain tty with a warning (`--output-limit` is applied when the installed `script` supports it)
+- `util-linux` `script` and coreutils ≥ 8.31 (`tail`, `env --default-signal`) — for console capture; without them the wrapper falls back to a plain tty with a warning
 - `gdb` — only for the GDB section of crash reports
 - `coredumpctl` — only if `kernel.core_pattern` is a pipe handler (systemd-coredump)
 - `file` — to verify a core dump is a real ELF core; if missing, only the mtime check runs and the report says so
@@ -106,11 +106,11 @@ The operator's own `LD_PRELOAD` (e.g. from a systemd unit) is never dropped, in 
 
 ## Console capture
 
-By default the server runs on a pty via `script`: live output goes to the operator's terminal, a copy lands in a hidden typescript inside this run's private temporary directory (`mktemp -d`, mode 700, under `TMPDIR` or `/tmp`; the 200 MiB `--output-limit` guards against a spamming console; when the limit is hit, `script` stops writing and the report marks the tail as possibly stale — it is frozen at truncation time, not crash time), from where the report takes the last 100 lines of both streams. The server command is handed to `script` through a temporary launcher file with a `#!/bin/bash` shebang — arguments are always parsed by bash, not by `$SHELL` (dash, fish and others would mangle quoting and Cyrillic). `script -e` preserves the server exit code. Without `script` — plain-tty fallback with a warning. There are no user-facing capture options — deliberate.
+By default the server runs on a pty via `script`: live output goes to the operator's terminal, the typescript goes through a pipe into `tail -n 100`, which keeps only the last 100 lines of both streams in memory and writes them into this run's private temporary directory (`mktemp -d`, mode 700, under `TMPDIR` or `/tmp`) when the server exits — memory stays bounded however long the server runs and however much it prints. There is deliberately no `--output-limit`: when exceeded, `script` sends the server SIGTERM (util-linux behavior), which would kill a healthy server after a long uptime or a console flood. `script` runs with SIGPIPE ignored, so if the `tail` reader dies the server and the operator's live view keep going (the report then says the tail is missing); the launcher restores the default SIGPIPE for the server via `env --default-signal=PIPE`, so capture does not change server behavior. The server command is handed to `script` through a temporary launcher file with a `#!/bin/bash` shebang — arguments are always parsed by bash, not by `$SHELL` (dash, fish and others would mangle quoting and Cyrillic). `script -e` preserves the server exit code. Without `script` — plain-tty fallback with a warning. There are no user-facing capture options — deliberate.
 
 Before launch the wrapper creates the run's private directory under `TMPDIR` (or `/tmp`). An unwritable `TMPDIR` does not stop the server: capture is disabled with a warning and the wrapper continues in plain-tty mode (the server directory itself is never written for capture). In plain-tty mode no private directory is created and `TMPDIR` is not needed.
 
-Leftover hygiene: the run's private directory is removed when the tail is taken, on any wrapper exit, and on session death (SIGHUP — a closed screen/SSH window). Deaths no trap can catch (`kill -9`, power loss) are covered at the next start: private directories older than one hour are swept from `TMPDIR`.
+Leftover hygiene: the run's private directory is removed when the tail is taken, on any wrapper exit, and on session death (SIGHUP — a closed screen/SSH window). Deaths no trap can catch (`kill -9`, power loss) are covered at the next start: each run writes an `owner` file (wrapper PID + process start time) into its directory, and a starting wrapper removes another run's directory only if that owner is gone (a reused PID does not count — the start time differs). Directories without an owner file (older wrapper versions) are removed only if they are older than an hour and no running process names them in its command line. Age alone is not enough: a long-running instance never touches its directory's mtime.
 
 ## Files and artifacts
 
@@ -145,6 +145,10 @@ The core — argument parsing, launch, restart loop — is compatible. Not carri
 - `-help` is absent; this README stands in its place
 
 In the original, crash diagnostics amount to a `bt` command written into a shared `debug.log`; here it is a full system-state report per crash.
+
+## Tests
+
+`tests/run.sh [path/to/hlds_run] [letters]` — integration tests against a fake server (`tests/fake_hlds`): clean exit, argument quoting, server SIGPIPE disposition and fds, crash report with console tail, 260 MiB of console output (no kill, bounded reader memory), capture reader death (with and without a following crash), operator `LD_PRELOAD`, the crash-loop guard, the stale-directory sweep. Runs in a private work directory with its own `TMPDIR` — safe next to a live server. `TEST_SHELL` picks `$SHELL` for `script` (default: fish if installed, else bash).
 
 ## Credits
 
