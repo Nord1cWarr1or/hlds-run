@@ -3,7 +3,8 @@
 #
 #   tests/run.sh [path/to/hlds_run] [test-letters]     e.g. tests/run.sh ./hlds_run AC
 #
-# Needs: bash, util-linux script, coreutils, procps (pgrep/pkill). Slow part:
+# Needs: bash, util-linux script, coreutils, procps (pgrep/pkill); tmux for J-L
+# (skipped without it). Slow part:
 # test C pushes 260 MiB through the pty (seconds to a minute).
 # TEST_SHELL picks $SHELL for `script` (default fish if installed, else bash):
 # script re-parses its -c command through $SHELL.
@@ -154,6 +155,60 @@ if want I; then echo "I: own directory carries an owner file"; clean
 	chk "owner = live wrapper PID + its start time ($o)" '[ -n "$opid" ] && [ "$(starttime "$opid")" = "$ost" ] && tr "\0" " " < /proc/$opid/cmdline | grep -q hlds_run'
 	wait $wp
 	chk "directory removed after exit" '[ -z "$(ls -A "$TMPDIR")" ]'
+fi
+
+# J-M: stopping. tmux kill-session (LinuxGSM stop) must take the server down
+# with the wrapper; a console "quit" must still reach the server.
+procs() { pgrep -f "^/bin/bash (\./fake_hlds|$W) .*\+tag $1\$"; }
+gone_within() { local i; for i in $(seq 1 $(( $2 * 10 ))); do [ -z "$(procs "$1")" ] && return 0; sleep 0.1; done; return 1; }
+TSOCK="hlds-run-tests-$$"
+# exec: the wrapper must be the session leader of the pane, as under
+# LinuxGSM - the kernel sends the hangup SIGHUP only to the session leader.
+tmux_run() { tmux -L "$TSOCK" new-session -d -s t -x 200 -y 50 "cd '$WORK/srv' && exec env TMPDIR='$2' FAKE_MODE=console:60 '$W' -binary ./fake_hlds -game valve +tag $1"; }
+if command -v tmux >/dev/null; then trap 'tmux -L "$TSOCK" kill-server 2>/dev/null; for p in "${HELPERS[@]}"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done; rm -rf "$WORK"' EXIT; fi
+
+if want J; then echo "J: tmux kill-session stops the server (capture mode)"; clean
+	if ! command -v tmux >/dev/null; then echo "  SKIP (no tmux)"; else
+		tag=J$$; tmux_run $tag "$TMPDIR"; sleep 2
+		chk "server and wrapper running" '[ "$(procs $tag | wc -l)" -eq 2 ]'
+		tmux -L "$TSOCK" kill-session -t t
+		chk "all gone within 5 s after kill-session" 'gone_within $tag 5'
+		chk "no restart afterwards" 'sleep 2; [ -z "$(procs $tag)" ]'
+		pkill -f "\+tag $tag\$" 2>/dev/null; sleep 0.5; rm -rf "$TMPDIR"/hlds-run.*
+	fi
+fi
+
+if want K; then echo "K: tmux kill-session stops the server (plain tty mode)"; clean
+	if ! command -v tmux >/dev/null; then echo "  SKIP (no tmux)"; else
+		tag=K$$; tmux_run $tag "$WORK/no-such-dir"; sleep 2
+		chk "server and wrapper running" '[ "$(procs $tag | wc -l)" -eq 2 ]'
+		tmux -L "$TSOCK" kill-session -t t
+		chk "all gone within 5 s after kill-session" 'gone_within $tag 5'
+		pkill -f "\+tag $tag\$" 2>/dev/null; sleep 0.5
+	fi
+fi
+
+if want L; then echo "L: console command reaches the server (quit = clean stop)"; clean
+	if ! command -v tmux >/dev/null; then echo "  SKIP (no tmux)"; else
+		tag=L$$; tmux_run $tag "$TMPDIR"; sleep 2
+		tmux -L "$TSOCK" send-keys -t t quit ENTER
+		chk "server got quit and exited" 'gone_within $tag 5 && grep -qx QUIT-OK finished'
+		tmux -L "$TSOCK" kill-server 2>/dev/null
+		pkill -f "\+tag $tag\$" 2>/dev/null; sleep 0.5; rm -rf "$TMPDIR"/hlds-run.*
+	fi
+fi
+
+if want M; then echo "M: SIGTERM to the wrapper stops the server at once"; clean
+	tag=M$$
+	FAKE_MODE=console:60 "$W" -binary ./fake_hlds -game valve +tag $tag > op.log 2>&1 < /dev/null & wp=$!
+	sleep 1.5; t0=$(date +%s%N)
+	kill -TERM $wp; wait $wp; rc=$?
+	ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+	chk "rc=143 ($rc)" '[ $rc -eq 143 ]'
+	chk "wrapper exited within 3 s (${ms} ms)" '[ $ms -lt 3000 ]'
+	chk "server gone" 'gone_within $tag 2'
+	chk "stop logged" 'oplog | grep -q "Received SIGTERM - stopping the server"'
+	chk "private directory removed" '[ -z "$(ls -A "$TMPDIR")" ]'
 fi
 
 clean

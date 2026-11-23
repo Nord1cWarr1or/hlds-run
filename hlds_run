@@ -70,12 +70,46 @@ cleanup_temp() {
 	[[ -n "$RUN_TMP_DIR" ]] && { rm -rf -- "$RUN_TMP_DIR"; RUN_TMP_DIR=""; }
 }
 
-# Bash skips the EXIT trap on a fatal signal - route INT/TERM/HUP through
-# exit so the cleanup still runs. HUP matters in production: screen/SSH
-# session death hits the whole process group with it.
-trap 'trap - INT; exit 130' INT
-trap 'trap - TERM; exit 143' TERM
-trap 'trap - HUP; exit 129' HUP
+# PID of the running server child (`script` in capture mode, the server
+# itself in plain-tty mode); empty while no server runs.
+SERVER_PID=""
+GOT_INT=0
+
+# Stop the server child: TERM (in capture mode `script` passes it on to the
+# server), then KILL after STOP_GRACE seconds. With `script` killed the
+# server's pty hangs up and the server gets SIGHUP from the kernel.
+STOP_GRACE=10
+# shellcheck disable=SC2329 # called from the signal traps
+stop_server() {
+	[[ -n "$SERVER_PID" ]] || return 0
+	kill -TERM "$SERVER_PID" 2>/dev/null
+	local waited=0
+	while kill -0 "$SERVER_PID" 2>/dev/null && [[ $waited -lt $(( STOP_GRACE * 10 )) ]]; do
+		sleep 0.1; waited=$(( waited + 1 ))
+	done
+	kill -0 "$SERVER_PID" 2>/dev/null && kill -KILL "$SERVER_PID" 2>/dev/null
+	wait "$SERVER_PID" 2>/dev/null
+	SERVER_PID=""
+}
+
+# HUP/TERM: stop the server, then exit (EXIT trap cleans up). The server
+# runs in the background and is waited for with `wait`, so these traps fire
+# at once - a trap on a foreground child would be deferred until the child
+# exits. That deferral orphaned a live server on tmux kill-session (LinuxGSM
+# stop after a lost "quit"): the kernel sends SIGHUP only to the session
+# leader (this wrapper), never to the server behind `script`'s own pty.
+# shellcheck disable=SC2329 # called from the signal traps
+on_stop_signal() {
+	trap - HUP TERM
+	log_message "Received SIG$1 - stopping the server."
+	stop_server
+	exit "$2"
+}
+# INT keeps its old meaning: the server decides (it ignores SIGINT with
+# -ignoresigint); the wrapper exits with 130 once the server is gone.
+trap 'GOT_INT=1' INT
+trap 'on_stop_signal TERM 143' TERM
+trap 'on_stop_signal HUP 129' HUP
 trap cleanup_temp EXIT
 
 # --- Global Configuration ---
@@ -355,6 +389,28 @@ make_launcher() {
 	chmod +x "$LAUNCHER_FILE"
 }
 
+# Wait for SERVER_PID and return its exit code. `wait` returns early (>128)
+# when a trapped signal arrives; only INT comes back here (HUP/TERM exit
+# from their trap), so wait again while the server is still there (a
+# zombie also passes kill -0 - the next wait reaps it). After the server
+# is gone, a received INT ends the wrapper with 130 as before.
+wait_server() {
+	local rc
+	while :; do
+		wait "$SERVER_PID"; rc=$?
+		if [[ $rc -gt 128 ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+			continue
+		fi
+		break
+	done
+	SERVER_PID=""
+	if [[ $GOT_INT -eq 1 ]]; then
+		log_message "Server stopped by operator (SIGINT). Exiting script."
+		exit 130
+	fi
+	return $rc
+}
+
 launch_server() {
 	CONSOLE_TAIL=""
 	# operator_preload comes from init(): the operator's LD_PRELOAD was moved
@@ -395,7 +451,12 @@ launch_server() {
 		# a second one on the same port). The launcher restores the default
 		# for the server itself. -c BEFORE the positional file: under
 		# POSIXLY_CORRECT getopt stops at the first positional (audit G4).
-		( trap '' PIPE; exec script -q -e -c "\"$LAUNCHER_FILE\"" "/dev/fd/$CAP_FD" )
+		# Background + wait_server: the HUP/TERM traps must fire while the
+		# server runs. `<&0`: an explicit redirect keeps the console as stdin
+		# (an async command without job control gets /dev/null otherwise).
+		( trap '' PIPE; exec script -q -e -c "\"$LAUNCHER_FILE\"" "/dev/fd/$CAP_FD" ) <&0 &
+		SERVER_PID=$!
+		wait_server
 		local exitcode=$?
 		rm -f "$LAUNCHER_FILE"; LAUNCHER_FILE=""
 		# Close our write end: the reader gets EOF and writes the tail. Wait
@@ -421,10 +482,12 @@ launch_server() {
 		[[ -n "$operator_preload" ]] && combined_preload="${combined_preload:+$combined_preload:}$operator_preload"
 		if [[ -n "$combined_preload" ]]; then
 			# No capture: still scope the preload to the server only.
-			env "LD_PRELOAD=$combined_preload" "$HL" "${SRV_ARGS[@]}"
+			env "LD_PRELOAD=$combined_preload" "$HL" "${SRV_ARGS[@]}" <&0 &
 		else
-			"$HL" "${SRV_ARGS[@]}"
+			"$HL" "${SRV_ARGS[@]}" <&0 &
 		fi
+		SERVER_PID=$!
+		wait_server
 		local exitcode=$?
 	fi
 	if [[ -n "$CAPLOG_FILE" && -f "$CAPLOG_FILE" ]]; then

@@ -68,7 +68,7 @@ Tunables live at the top of the script:
 
 ## Restart loop
 
-After a crash the server restarts with a `-timeout` delay. The crash-loop guard stops the wrapper after `STREAK_LIMIT` crashes in a row where each run lived shorter than `HEALTHY_UPTIME` seconds ("Crash-loop detected"). A single crash after long uptime resets the streak. A clean exit (code 0, Ctrl+C/SIGINT, SIGTERM — a normal systemd stop) ends the loop without a report.
+After a crash the server restarts with a `-timeout` delay. The crash-loop guard stops the wrapper after `STREAK_LIMIT` crashes in a row where each run lived shorter than `HEALTHY_UPTIME` seconds ("Crash-loop detected"). A single crash after long uptime resets the streak. A clean exit (code 0, Ctrl+C/SIGINT, SIGTERM — a normal systemd stop) ends the loop without a report. SIGTERM or SIGHUP to the wrapper (a systemd stop, a closed tmux/screen/SSH session — LinuxGSM `stop` ends with `tmux kill-session`) stops the server at once: the wrapper sends it SIGTERM, SIGKILL after 10 s, and exits without a restart. SIGINT is left to the server (with `-ignoresigint` it keeps running); the wrapper exits once the server is gone.
 
 ## Crash report
 

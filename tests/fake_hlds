@@ -1,7 +1,9 @@
 #!/bin/bash
 # Fake hlds_linux for tests/run.sh. Prints its argv, ignored-signal mask,
 # LD_PRELOAD and extra fds, then acts per FAKE_MODE:
-#   exit0 | segv | spam:<MiB> | longrun:<sec> | longsegv:<sec>
+#   exit0 | segv | spam:<MiB> | longrun:<sec> | longsegv:<sec> | console:<sec>
+# console: reads console lines like the real server; "quit" -> exit 0 and
+# file ./finished; EOF on stdin is ignored (the server keeps running).
 # fds are listed via ls into a file - a $(...) would itself hold a pipe fd.
 echo "FAKE START pid=$$"
 i=0; for a in "$@"; do i=$((i+1)); printf 'ARG%d=[%s]\n' "$i" "$a"; done
@@ -14,4 +16,11 @@ case "${FAKE_MODE:-exit0}" in
   spam:*) mb=${FAKE_MODE#spam:}; head -c $((mb*1024*1024)) /dev/zero | tr '\0' 'x' | fold -w 200; echo "SPAM DONE"; echo "FINISHED-OK" > "$PWD/finished"; exit 0 ;;
   longsegv:*) s=${FAKE_MODE#longsegv:}; for n in $(seq 1 $((s*10))); do echo "tick $n"; sleep 0.1; done; kill -SEGV $$ ;;
   longrun:*) s=${FAKE_MODE#longrun:}; for n in $(seq 1 $((s*10))); do echo "tick $n"; sleep 0.1; done; echo "FINISHED-OK" > "$PWD/finished"; exit 0 ;;
+  console:*) s=${FAKE_MODE#console:}; end=$(( $(date +%s) + s ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+      if IFS= read -r -t 1 cmd; then
+        cmd=${cmd%$'\r'}; echo "CMD [$cmd]"
+        [ "$cmd" = quit ] && { echo "QUIT-OK" > "$PWD/finished"; exit 0; }
+      elif [ $? -le 128 ]; then sleep 1; fi
+    done; exit 0 ;;
 esac
